@@ -77,3 +77,64 @@ pub async fn run_client(
         }
     }
 }
+
+pub async fn run_client_full(
+    remote: std::net::SocketAddr,
+    psk: &[u8; 32],
+    tun_ip: std::net::Ipv4Addr,
+    netmask: u8,
+    gateway: std::net::Ipv4Addr,
+    mtu: u16,
+) -> Result<(), Error> {
+    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
+    tracing::info!("client: TUN ts0 created, IP {}/{}", tun_ip, netmask);
+
+    let saved_route = crate::route::save_default_route().await?;
+    tracing::info!("client: saved default route: {:?}", saved_route);
+
+    let mut stream = crate::transport::connect(remote).await
+        .map_err(|e| Error::Io(e))?;
+    tracing::info!("client: connected to {}", remote);
+
+    let session_key = crate::handshake::client_handshake(&mut stream, psk).await?;
+    tracing::info!("client: handshake complete");
+
+    let crypto = Arc::new(Crypto::new(&session_key));
+
+    if let Some(ref route) = saved_route {
+        let server_ip = match remote.ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            std::net::IpAddr::V6(_) => return Err(Error::Config("IPv6 not supported".into())),
+        };
+        crate::route::add_exclude_route(server_ip, route).await?;
+        crate::route::set_tun_route("ts0", gateway).await?;
+        tracing::info!("client: routes configured");
+    }
+
+    let forward_tun = tun.clone();
+    let forward = run_client(forward_tun, stream, crypto);
+
+    let result = tokio::select! {
+        r = forward => {
+            tracing::info!("client: forwarding stopped: {:?}", r);
+            r
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("client: Ctrl+C received, shutting down");
+            Ok(())
+        }
+    };
+
+    if let Some(ref route) = saved_route {
+        if let Err(e) = crate::route::restore_route(route).await {
+            tracing::error!("client: failed to restore route: {}", e);
+        } else {
+            tracing::info!("client: routes restored");
+        }
+    }
+
+    drop(tun);
+    tracing::info!("client: TUN deleted");
+
+    result
+}

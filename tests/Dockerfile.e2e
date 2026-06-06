@@ -1,0 +1,13 @@
+FROM debian:stable-slim
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    iproute2 \
+    iputils-ping \
+    dnsutils \
+    curl \
+    ca-certificates \
+    socat \
+    iptables \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/traffic-sentinel /usr/local/bin/traffic-sentinel

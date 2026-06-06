@@ -18,6 +18,7 @@ pub struct ClientConfig {
     pub remote: String,
     pub tun_ip: Option<String>,
     pub tun_netmask: Option<u8>,
+    pub gateway: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +75,9 @@ impl Config {
                 validate_socket_addr(&client.remote)?;
                 if let Some(ref ip) = client.tun_ip {
                     validate_ip(ip)?;
+                }
+                if let Some(ref gw) = client.gateway {
+                    validate_ip(gw)?;
                 }
                 if let Some(mask) = client.tun_netmask {
                     validate_netmask(mask)?;
@@ -307,6 +311,26 @@ mod tests {
                 remote: "1.2.3.4:8443".to_string(),
                 tun_ip: Some("10.0.0.2".to_string()),
                 tun_netmask: Some(30),
+                gateway: None,
+            }),
+            server: None,
+        };
+        assert!(cfg.validate_for_mode(&Mode::Client).is_ok());
+    }
+
+    #[test]
+    fn test_validate_for_mode_client_with_gateway() {
+        let cfg = Config {
+            tunnel: TunnelConfig {
+                psk: "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
+                    .to_string(),
+                mtu: None,
+            },
+            client: Some(ClientConfig {
+                remote: "10.0.0.1:8443".to_string(),
+                tun_ip: Some("10.0.0.2".to_string()),
+                tun_netmask: Some(30),
+                gateway: Some("10.0.0.1".to_string()),
             }),
             server: None,
         };
@@ -343,6 +367,7 @@ mod tests {
                 remote: "1.2.3.4:8443".to_string(),
                 tun_ip: None,
                 tun_netmask: None,
+                gateway: None,
             }),
             server: Some(ServerConfig {
                 listen: "0.0.0.0:8443".to_string(),

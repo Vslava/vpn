@@ -40,7 +40,12 @@ async fn test_server_forwarding_pipeline() {
     client.set_nodelay(true).unwrap();
     eprintln!("client: connected to server");
 
-    let crypto = Crypto::new(&psk);
+    let session_key = traffic_sentinel::handshake::client_handshake(&mut client, &psk)
+        .await
+        .expect("client handshake failed");
+    eprintln!("client: handshake complete");
+
+    let crypto = Crypto::new(&session_key);
     let nonce = Crypto::generate_nonce();
     let ciphertext = crypto
         .encrypt(&nonce, payload)

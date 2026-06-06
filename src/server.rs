@@ -28,15 +28,18 @@ pub async fn run_server(
 }
 
 pub async fn handle_client(
-    stream: tokio::net::TcpStream,
+    mut stream: tokio::net::TcpStream,
     psk: &[u8; 32],
     tun: Arc<TunDevice>,
 ) -> Result<(), Error> {
+    let session_key = crate::handshake::server_handshake(&mut stream, psk).await?;
+    tracing::info!("server: handshake complete");
+
     stream.set_nodelay(true)?;
 
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    let crypto = Arc::new(Crypto::new(psk));
+    let crypto = Arc::new(Crypto::new(&session_key));
     let seq = AtomicU32::new(0);
 
     let tcp_to_tun = {

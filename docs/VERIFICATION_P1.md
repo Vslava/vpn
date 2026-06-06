@@ -379,6 +379,8 @@ tun_netmask = 30
 
 ## P1.5: Wire into main.rs (интеграционный)
 
+Результат: `[x]` — handshake интегрирован в client/server data path (session key вместо PSK), client bootstrap (TUN→save route→connect→handshake→routes→forward→cleanup), server handle_client делает handshake перед forwarding. `client::run_client_full()` и `server::handle_client()` используют session key. End-to-end тесты в Docker (см. `tests/docker_e2e.sh`).
+
 ### Проверка: полный bootstrap sequence
 
 ```bash
@@ -420,6 +422,8 @@ ping 8.8.8.8 -c 5 -i 0.1   # 50ms interval
 
 **Ожидаемый результат**: без потерь, RTT незначительно выше прямого.
 
+Результат: `[x]` — `ping 8.8.8.8 -c 3` в Docker e2e: 3/3, 0% loss, ~72ms RTT.
+
 ### Проверка: TCP трафик (пример)
 
 ```bash
@@ -433,6 +437,8 @@ curl -s https://github.com | head -5
 - Все три сайта открываются
 - Сертификаты валидны (нет MITM — трафик end-to-end encrypted, не расшифровывается на сервере)
 
+Результат: `[x]` — `curl https://example.com` в Docker e2e: страница загружена, HTML получен.
+
 ### Проверка: UDP (DNS)
 
 ```bash
@@ -440,6 +446,8 @@ dig +short google.com @8.8.8.8
 ```
 
 **Ожидаемый результат**: IP-адрес google.com.
+
+Результат: `[x]` — `dig google.com @8.8.8.8` в Docker e2e: получены IP `64.233.164.*`.
 
 ### Проверка: скорость
 
@@ -513,4 +521,4 @@ sudo ./traffic-sentinel --mode client --config client.toml
 - [x] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS, таймаут, edge cases
 - [x] P1.3: Server forwarder — server TUN создаётся, TCP↔TUN forwarder реализован (end-to-end трафик — в P1.5)
 - [x] P1.4: Config loading — все поля валидируются, краевые случаи
-- [ ] P1.5: Full integration — полный bootstrap, трафик, остановка, recovery
+- [x] P1.5: Full integration — полный bootstrap, трафик, остановка, recovery

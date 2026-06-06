@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
-
 use clap::Parser;
-use traffic_sentinel::{client, config, crypto, server, transport, tun};
+use traffic_sentinel::{client, config, server};
 
 #[derive(Parser)]
 #[command(name = "traffic-sentinel", about = "Encrypted VPN tunnel")]
@@ -65,20 +63,14 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let crypto = Arc::new(crypto::Crypto::new(&psk));
-    let mtu = cfg.tunnel.mtu.unwrap_or(1400);
-
     match mode {
-        config::Mode::Client => run_client_mode(&cfg, crypto, mtu).await,
-        config::Mode::Server => run_server_mode(&cfg, &psk, mtu).await,
+        config::Mode::Client => run_client_mode(&cfg, psk).await,
+        config::Mode::Server => run_server_mode(&cfg, psk).await,
     }
 }
 
-async fn run_client_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>, mtu: u16) {
-    let client_cfg = cfg.client.as_ref().unwrap_or_else(|| {
-        eprintln!("error: missing [client] section in config");
-        std::process::exit(1);
-    });
+async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
+    let client_cfg = cfg.client.as_ref().unwrap();
 
     let remote: SocketAddr = client_cfg.remote.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid remote address '{}': {}", client_cfg.remote, e);
@@ -92,30 +84,21 @@ async fn run_client_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>, mtu:
     });
     let netmask = client_cfg.tun_netmask.unwrap_or(30);
 
-    tracing::info!("creating TUN interface ts0, IP {}/{}", tun_ip, netmask);
-    let tun = tun::create_tun("ts0", mtu, tun_ip, netmask).await.unwrap_or_else(|e| {
-        eprintln!("error: failed to create TUN: {}", e);
-        std::process::exit(1);
-    });
-    let tun = Arc::new(tun);
-
-    tracing::info!("connecting to server at {}", remote);
-    let stream = transport::connect(remote).await.unwrap_or_else(|e| {
-        eprintln!("error: failed to connect: {}", e);
+    let gw_str = client_cfg.gateway.as_deref().unwrap_or("10.0.0.1");
+    let gateway: std::net::Ipv4Addr = gw_str.parse().unwrap_or_else(|e| {
+        eprintln!("error: invalid gateway '{}': {}", gw_str, e);
         std::process::exit(1);
     });
 
-    tracing::info!("connected, starting tunnel");
-    if let Err(e) = client::run_client(tun, stream, crypto).await {
+    let mtu = cfg.tunnel.mtu.unwrap_or(1400);
+
+    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu).await {
         tracing::error!("client error: {}", e);
     }
 }
 
-async fn run_server_mode(cfg: &config::Config, psk: &[u8; 32], mtu: u16) {
-    let server_cfg = cfg.server.as_ref().unwrap_or_else(|| {
-        eprintln!("error: missing [server] section in config");
-        std::process::exit(1);
-    });
+async fn run_server_mode(cfg: &config::Config, psk: [u8; 32]) {
+    let server_cfg = cfg.server.as_ref().unwrap();
 
     let listen: SocketAddr = server_cfg.listen.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid listen address '{}': {}", server_cfg.listen, e);
@@ -129,8 +112,9 @@ async fn run_server_mode(cfg: &config::Config, psk: &[u8; 32], mtu: u16) {
     });
     let netmask = server_cfg.tun_netmask.unwrap_or(30);
 
-    tracing::info!("server: creating TUN ts0, IP {}/{}", tun_ip, netmask);
-    if let Err(e) = server::run_server(listen, psk, tun_ip, mtu, netmask).await {
+    let mtu = cfg.tunnel.mtu.unwrap_or(1400);
+
+    if let Err(e) = server::run_server(listen, &psk, tun_ip, mtu, netmask).await {
         tracing::error!("server error: {}", e);
     }
 }
