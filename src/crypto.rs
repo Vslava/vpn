@@ -23,14 +23,14 @@ impl Crypto {
         let nonce = GenericArray::from_slice(nonce);
         self.cipher
             .encrypt(nonce, plaintext)
-            .map_err(|e| crate::error::Error::Crypto(format!("encrypt failed: {e}")))
+            .map_err(|_| crate::error::Error::Crypto("AEAD encryption failed".into()))
     }
 
     pub fn decrypt(&self, nonce: &[u8; 24], ciphertext: &[u8]) -> Result<Vec<u8>, crate::error::Error> {
         let nonce = GenericArray::from_slice(nonce);
         self.cipher
             .decrypt(nonce, ciphertext)
-            .map_err(|e| crate::error::Error::Crypto(format!("decrypt failed: {e}")))
+            .map_err(|_| crate::error::Error::Crypto("AEAD decryption failed: data may be corrupted".into()))
     }
 }
 

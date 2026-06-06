@@ -79,6 +79,20 @@ pub async fn create_tun(
 
     match tun::create_as_async(&config) {
         Ok(device) => Ok(TunDevice::new(device)),
-        Err(e) => Err(crate::error::Error::Tun(format!("failed to create TUN: {e}"))),
+        Err(e) => {
+            let msg = match &e {
+                tun::Error::Io(io_err) => match io_err.kind() {
+                    io::ErrorKind::PermissionDenied => {
+                        format!("Failed to create TUN interface: {io_err}. Run with sudo / root")
+                    }
+                    io::ErrorKind::AddrInUse => {
+                        format!("Failed to create TUN interface: {io_err}. Try a different interface name or clean up existing one")
+                    }
+                    _ => format!("Failed to create TUN interface: {io_err}"),
+                },
+                _ => format!("Failed to create TUN interface: {e}"),
+            };
+            Err(crate::error::Error::Tun(msg))
+        }
     }
 }
