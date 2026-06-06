@@ -288,6 +288,8 @@ ip addr show ts0   # на сервере
 
 ## P1.4: Full config loading
 
+Результат: `[x]` — вся валидация реализована в `config.rs::validate()` и `validate_for_mode()`, покрыта 17 unit-тестами.
+
 ### Проверка: полный конфиг клиента
 
 ```toml
@@ -510,5 +512,5 @@ sudo ./traffic-sentinel --mode client --config client.toml
 - [x] P1.1: Route management — сохранение/восстановление default route, exclude route
 - [x] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS, таймаут, edge cases
 - [x] P1.3: Server forwarder — server TUN создаётся, TCP↔TUN forwarder реализован (end-to-end трафик — в P1.5)
-- [ ] P1.4: Config loading — все поля валидируются, краевые случаи
+- [x] P1.4: Config loading — все поля валидируются, краевые случаи
 - [ ] P1.5: Full integration — полный bootstrap, трафик, остановка, recovery

@@ -24,7 +24,7 @@ async fn test_tun_route_roundtrip() {
     let tun_name = "ts0";
     let tun_ip = Ipv4Addr::new(10, 0, 0, 2);
 
-    let tun = traffic_sentinel::tun::create_tun(tun_name, 1400, tun_ip)
+    let tun = traffic_sentinel::tun::create_tun(tun_name, 1400, tun_ip, 30)
         .await
         .expect("create TUN failed");
 

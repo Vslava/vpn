@@ -55,6 +55,11 @@ async fn main() {
         std::process::exit(1)
     });
 
+    cfg.validate_for_mode(&mode).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+
     let psk = parse_psk(&cfg.tunnel.psk).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
@@ -80,14 +85,15 @@ async fn run_client_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>, mtu:
         std::process::exit(1);
     });
 
-    let tun_ip_str = client_cfg.tun_ip.as_deref().unwrap_or("10.0.0.2/30");
-    let tun_ip: std::net::Ipv4Addr = tun_ip_str.split('/').next().unwrap().parse().unwrap_or_else(|e| {
+    let tun_ip_str = client_cfg.tun_ip.as_deref().unwrap_or("10.0.0.2");
+    let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid TUN IP '{}': {}", tun_ip_str, e);
         std::process::exit(1);
     });
+    let netmask = client_cfg.tun_netmask.unwrap_or(30);
 
-    tracing::info!("creating TUN interface ts0, IP {}", tun_ip);
-    let tun = tun::create_tun("ts0", mtu, tun_ip).await.unwrap_or_else(|e| {
+    tracing::info!("creating TUN interface ts0, IP {}/{}", tun_ip, netmask);
+    let tun = tun::create_tun("ts0", mtu, tun_ip, netmask).await.unwrap_or_else(|e| {
         eprintln!("error: failed to create TUN: {}", e);
         std::process::exit(1);
     });
@@ -116,14 +122,15 @@ async fn run_server_mode(cfg: &config::Config, psk: &[u8; 32], mtu: u16) {
         std::process::exit(1);
     });
 
-    let tun_ip_str = server_cfg.tun_ip.as_deref().unwrap_or("10.0.0.1/30");
-    let tun_ip: std::net::Ipv4Addr = tun_ip_str.split('/').next().unwrap().parse().unwrap_or_else(|e| {
+    let tun_ip_str = server_cfg.tun_ip.as_deref().unwrap_or("10.0.0.1");
+    let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid TUN IP '{}': {}", tun_ip_str, e);
         std::process::exit(1);
     });
+    let netmask = server_cfg.tun_netmask.unwrap_or(30);
 
-    tracing::info!("server: creating TUN ts0, IP {}", tun_ip);
-    if let Err(e) = server::run_server(listen, psk, tun_ip, mtu).await {
+    tracing::info!("server: creating TUN ts0, IP {}/{}", tun_ip, netmask);
+    if let Err(e) = server::run_server(listen, psk, tun_ip, mtu, netmask).await {
         tracing::error!("server error: {}", e);
     }
 }

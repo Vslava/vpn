@@ -62,12 +62,18 @@ impl AsyncWrite for TunDevice {
     }
 }
 
-pub async fn create_tun(name: &str, mtu: u16, ip: Ipv4Addr) -> Result<TunDevice, crate::error::Error> {
+pub async fn create_tun(
+    name: &str,
+    mtu: u16,
+    ip: Ipv4Addr,
+    netmask_bits: u8,
+) -> Result<TunDevice, crate::error::Error> {
+    let netmask = crate::config::netmask_from_prefix(netmask_bits);
     let mut config = tun::configure();
     config
         .tun_name(name)
         .address(ip)
-        .netmask(Ipv4Addr::new(255, 255, 255, 252))
+        .netmask(netmask)
         .mtu(mtu)
         .up();
 

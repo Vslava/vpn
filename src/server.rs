@@ -13,8 +13,9 @@ pub async fn run_server(
     psk: &[u8; 32],
     tun_ip: std::net::Ipv4Addr,
     mtu: u16,
+    netmask: u8,
 ) -> Result<(), Error> {
-    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip).await?);
+    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
     tracing::info!("server: TUN ts0 created, IP {}", tun_ip);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

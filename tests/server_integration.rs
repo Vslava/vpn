@@ -18,7 +18,7 @@ async fn test_server_forwarding_pipeline() {
     let psk = [0xABu8; 32];
     let payload = b"Hello, VPN forwarder!";
 
-    let tun = tun::create_tun("ts_test", 1400, Ipv4Addr::new(10, 0, 0, 1))
+    let tun = tun::create_tun("ts_test", 1400, Ipv4Addr::new(10, 0, 0, 1), 30)
         .await
         .expect("create TUN failed (requires sudo)");
     let tun = Arc::new(tun);
