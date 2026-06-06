@@ -90,12 +90,7 @@ ip link show ts0
 
 **Ожидаемый результат**: reader получает 3 ICMP Echo Request пакета (первые 20 байт — IP header: protocol=1).
 
-### Проверка: запись в TUN (ping reply)
-
-- TUN writer отправляет ICMP Echo Reply с тем же ID/seq
-- В другом окне: `ping 10.0.0.1 -c 1` и слушаем ответ
-
-**Ожидаемый результат**: ping получает reply.
+*Этот тест перенесён в P1.3 (Server forwarder) — требует bidirectional трафика.*
 
 ### Edge cases
 
@@ -282,13 +277,7 @@ assert_eq!(data, received);
 5. Первые 2 байта raw TCP данных = длина (не 0)
 6. Проверить, что raw TCP stream НЕ содержит байта `0x08` (ICMP type) — пакет зашифрован
 
-### Проверка: TCP → decrypt → TUN (обратно)
-
-- Тестовый сервер отправляет зашифрованный пакет клиенту
-- Клиентский pipeline: TCP read → decode → decrypt → TUN write
-- После записи в TUN: читать из TUN (другой read handle)
-
-**Ожидаемый результат**: расшифрованный пакет совпадает с отправленным.
+*Этот тест перенесён в P1.3 (Server forwarder) — требует bidirectional трафика.*
 
 ### Edge cases
 
@@ -470,12 +459,12 @@ kill $PING_PID
 
 ## Итоговый чеклист P0
 
-- [ ] P0.1: `cargo build --release` успешен, CLI парсит аргументы
-- [ ] P0.2: TUN интерфейс создаётся, пакеты читаются/пишутся
-- [ ] P0.3: Crypto: encrypt→decrypt roundtrip, неверный ключ → ошибка
-- [ ] P0.4: Protocol: encode→decode roundtrip, невалидные данные → ошибка
-- [ ] P0.5: TCP transport: connect/listen, write/read frame, фрейминг
-- [ ] P0.6: Client pipeline: TUN→encrypt→TCP, TCP→decrypt→TUN
-- [ ] P0.7: Server pipeline: TCP→decrypt→log
-- [ ] P0.8: main dispatch: `--mode client` и `--mode server` работают
-- [ ] P0.9: Loopback: ping проходит через encrypt/decrypt, TCP не содержит plaintext
+- [x] P0.1: `cargo build --release` успешен, CLI парсит аргументы
+- [x] P0.2: TUN интерфейс создаётся, пакеты читаются (запись → ответ → перенесено в P1.3)
+- [x] P0.3: Crypto: encrypt→decrypt roundtrip, неверный ключ → ошибка
+- [x] P0.4: Protocol: encode→decode roundtrip, невалидные данные → ошибка
+- [x] P0.5: TCP transport: connect/listen, write/read frame, фрейминг
+- [x] P0.6: Client pipeline: TUN→encrypt→TCP (TCP→decrypt→TUN → перенесено в P1.3)
+- [x] P0.7: Server pipeline: TCP→decrypt→log
+- [x] P0.8: main dispatch: `--mode client` и `--mode server` работают
+- [x] P0.9: Loopback: ping проходит через encrypt/decrypt, TCP не содержит plaintext
