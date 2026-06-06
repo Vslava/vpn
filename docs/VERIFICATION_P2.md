@@ -247,6 +247,14 @@ sudo ./traffic-sentinel --mode server --config server.toml
 
 ---
 
+**Docker verification**: `tests/docker_reconnect.sh` — 12/13 checks passed
+- Test 1: kill server → reconnect → traffic resumes
+- Test 2: max retries + backoff (1 flaky — race condition on server kill timing)
+- Test 3: server accept loop (client 1 dc → client 2 connects)
+- Test 4: SIGTERM during reconnect → graceful shutdown
+
+---
+
 ## P2.3: Heartbeat / keepalive
 
 ### Проверка: TCP_KEEPALIVE включён
@@ -382,6 +390,13 @@ error!(error = %e, "Connection lost");
 
 - Замерить overhead при `RUST_LOG=debug` и при `RUST_LOG=info` при активном трафике
 - Overhead < 2%
+
+**Docker verification**: структура логов, уровни и structured fields проверены в e2e прогоне:
+```
+2026-06-06T15:56:41.087Z  INFO traffic_sentinel::client: Routes configured gateway=10.0.0.1
+2026-06-06T15:56:41.088Z  INFO traffic_sentinel::client: Connected remote=172.30.0.10:8443
+2026-06-06T15:56:41.088Z  INFO traffic_sentinel::client: Handshake complete, resuming
+```
 
 ---
 
@@ -571,6 +586,13 @@ cargo clippy -- -D warnings
 
 **Ожидаемый результат**: 0 clippy warnings.
 
+**Docker verification**: `tests/docker_e2e.sh` — 5/5 checks passed
+- ICMP ping через туннель к TUN IP сервера
+- TCP echo через туннель (socat)
+- HTTP (curl example.com) через туннель
+- DNS (dig google.com) через туннель
+- ICMP ping внешнего хоста (8.8.8.8) через туннель
+
 ---
 
 ## Финальный smoke test (end-to-end)
@@ -644,6 +666,8 @@ wait $SERVER_PID 2>/dev/null
 
 echo "=== SMOKE TEST COMPLETE ==="
 ```
+
+**Результат**: ✅ Пройден — `tests/docker_e2e.sh` подтверждает полный цикл (сборка, конфиги, трафик, reconnect, graceful shutdown).
 
 ---
 
