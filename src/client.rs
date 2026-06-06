@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::crypto::Crypto;
 use crate::error::Error;
@@ -12,13 +13,14 @@ pub async fn run_client(
     tun: Arc<TunDevice>,
     stream: TcpStream,
     crypto: Arc<Crypto>,
+    cancel: CancellationToken,
 ) -> Result<(), Error> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let seq = std::sync::atomic::AtomicU32::new(0);
 
     let tun_tx = tun.clone();
     let crypto_tx = crypto.clone();
-    let tun_to_tcp = tokio::spawn(async move {
+    let mut h1 = tokio::spawn(async move {
         loop {
             let mut buf = vec![0u8; tun_tx.mtu() as usize];
             let n = tun_tx.recv(&mut buf).await.map_err(Error::Io)?;
@@ -42,7 +44,7 @@ pub async fn run_client(
     });
 
     let crypto_rx = crypto.clone();
-    let tcp_to_tun = tokio::spawn(async move {
+    let mut h2 = tokio::spawn(async move {
         loop {
             let mut len_buf = [0u8; 2];
             reader.read_exact(&mut len_buf).await.map_err(Error::Io)?;
@@ -61,14 +63,27 @@ pub async fn run_client(
     });
 
     tokio::select! {
-        result = tun_to_tcp => {
+        biased;
+        _ = cancel.cancelled() => {
+            h1.abort();
+            h2.abort();
+            let _ = h1.await;
+            let _ = h2.await;
+            tracing::info!("forwarding cancelled");
+            Ok(())
+        }
+        result = &mut h1 => {
+            h2.abort();
+            let _ = h2.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
             }
         }
-        result = tcp_to_tun => {
+        result = &mut h2 => {
+            h1.abort();
+            let _ = h1.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
@@ -111,30 +126,30 @@ pub async fn run_client_full(
         tracing::info!("client: routes configured");
     }
 
+    let cancel = CancellationToken::new();
+    let sig_cancel = cancel.clone();
+    tokio::spawn(async move {
+        crate::wait_for_shutdown().await;
+        tracing::info!("client: shutdown signal received");
+        sig_cancel.cancel();
+    });
+
     let forward_tun = tun.clone();
-    let forward = run_client(forward_tun, stream, crypto);
+    let result = run_client(forward_tun, stream, crypto, cancel).await;
 
-    let result = tokio::select! {
-        r = forward => {
-            tracing::info!("client: forwarding stopped: {:?}", r);
-            r
-        }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("client: Ctrl+C received, shutting down");
-            Ok(())
-        }
-    };
-
+    tracing::info!("Restoring routes");
     if let Some(ref route) = saved_route {
         if let Err(e) = crate::route::restore_route(route).await {
             tracing::error!("client: failed to restore route: {}", e);
-        } else {
-            tracing::info!("client: routes restored");
         }
     }
 
+    tracing::info!("Deleting TUN");
     drop(tun);
-    tracing::info!("client: TUN deleted");
+
+    tracing::info!("Closing TCP connection");
+
+    tracing::info!("Shutdown complete");
 
     result
 }

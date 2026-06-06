@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::crypto::Crypto;
 use crate::error::Error;
@@ -21,16 +22,44 @@ pub async fn run_server(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("server: listening on {}", addr);
 
-    let (stream, peer) = listener.accept().await?;
+    let cancel = CancellationToken::new();
+    let sig_cancel = cancel.clone();
+    tokio::spawn(async move {
+        crate::wait_for_shutdown().await;
+        tracing::info!("server: shutdown signal received");
+        sig_cancel.cancel();
+    });
+
+    let accept = tokio::select! {
+        result = listener.accept() => result,
+        _ = cancel.cancelled() => {
+            tracing::info!("Deleting TUN");
+            drop(tun);
+            tracing::info!("Shutdown complete");
+            return Ok(());
+        }
+    };
+
+    let (stream, peer) = accept?;
     tracing::info!("server: client connected from {}", peer);
 
-    handle_client(stream, psk, tun).await
+    let result = handle_client(stream, psk, tun.clone(), cancel).await;
+
+    if let Err(ref e) = result {
+        tracing::error!("server: client error: {}", e);
+    }
+
+    tracing::info!("Deleting TUN");
+    drop(tun);
+    tracing::info!("Shutdown complete");
+    result
 }
 
 pub async fn handle_client(
     mut stream: tokio::net::TcpStream,
     psk: &[u8; 32],
     tun: Arc<TunDevice>,
+    cancel: CancellationToken,
 ) -> Result<(), Error> {
     let session_key = crate::handshake::server_handshake(&mut stream, psk).await?;
     tracing::info!("server: handshake complete");
@@ -42,7 +71,7 @@ pub async fn handle_client(
     let crypto = Arc::new(Crypto::new(&session_key));
     let seq = AtomicU32::new(0);
 
-    let tcp_to_tun = {
+    let mut h1 = {
         let crypto = crypto.clone();
         let tun = tun.clone();
         tokio::spawn(async move {
@@ -61,7 +90,7 @@ pub async fn handle_client(
         })
     };
 
-    let tun_to_tcp = {
+    let mut h2 = {
         let crypto = crypto.clone();
         let tun = tun.clone();
         tokio::spawn(async move {
@@ -88,14 +117,27 @@ pub async fn handle_client(
     };
 
     tokio::select! {
-        result = tcp_to_tun => {
+        biased;
+        _ = cancel.cancelled() => {
+            h1.abort();
+            h2.abort();
+            let _ = h1.await;
+            let _ = h2.await;
+            tracing::info!("server: client handling cancelled");
+            Ok(())
+        }
+        result = &mut h1 => {
+            h2.abort();
+            let _ = h2.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
             }
         }
-        result = tun_to_tcp => {
+        result = &mut h2 => {
+            h1.abort();
+            let _ = h1.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),

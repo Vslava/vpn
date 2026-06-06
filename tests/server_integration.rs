@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use traffic_sentinel::crypto::Crypto;
 use traffic_sentinel::protocol::{self, Frame};
 use traffic_sentinel::server;
@@ -31,7 +32,7 @@ async fn test_server_forwarding_pipeline() {
     let server_handle = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.expect("accept failed");
         eprintln!("server: accepted client from {}", peer);
-        server::handle_client(stream, &psk, tun).await
+        server::handle_client(stream, &psk, tun, CancellationToken::new()).await
     });
 
     let mut client = tokio::net::TcpStream::connect(addr)

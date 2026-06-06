@@ -14,7 +14,7 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
 aead = "0.5"
 generic-array = "0.14"
 hex = "0.4"
