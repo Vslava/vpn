@@ -1,16 +1,8 @@
-mod client;
-mod config;
-mod crypto;
-mod error;
-mod protocol;
-mod server;
-mod transport;
-mod tun;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
+use traffic_sentinel::{client, config, crypto, server, transport, tun};
 
 #[derive(Parser)]
 #[command(name = "traffic-sentinel", about = "Encrypted VPN tunnel")]

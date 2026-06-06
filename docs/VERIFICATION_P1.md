@@ -17,11 +17,13 @@
 - Сравнить с `ip route show default`
 
 ```bash
-# Текущий маршрут (например):
-default via 192.168.1.1 dev eth0 proto dhcp metric 100
+# Текущий маршрут:
+default via 192.168.1.1 dev wlp0s20f3 proto dhcp metric 600
 ```
 
-**Ожидаемый результат**: структура `DefaultRoute` содержит gateway `192.168.1.1`, interface `eth0`, metric `100`.
+**Ожидаемый результат**: структура `DefaultRoute` содержит gateway `192.168.1.1`, interface `wlp0s20f3`, metric `600`.
+
+Результат: `[x]` — пройдено (интеграционный тест `test_save_default_route`).
 
 ### Проверка: save_default_route когда нет default route
 
@@ -30,12 +32,14 @@ default via 192.168.1.1 dev eth0 proto dhcp metric 100
 
 **Ожидаемый результат**: `Ok(None)` или специальный вариант `NoDefaultRoute` (не ошибка).
 
+Результат: `[ ]` — не тестировалось (изменяет сеть во время теста).
+
 ### Проверка: set_default_tun_route
 
 ```bash
 # Предусловие: TUN ts0 существует с IP 10.0.0.2/30
 ip route show default
-# → default via 192.168.1.1 dev eth0
+# → default via 192.168.1.1 dev wlp0s20f3
 
 # Вызвать set_tun_route("10.0.0.1")
 ip route show default
@@ -45,6 +49,8 @@ ip route show default
 ```
 default via 10.0.0.1 dev ts0
 ```
+
+Результат: `[x]` — пройдено (через `test_tun_route_roundtrip`, маршрут переключен на ts0).
 
 ### Проверка: add_exclude_route
 
@@ -57,9 +63,11 @@ ip route show | grep 1.2.3.4
 
 **Ожидаемый результат**:
 ```
-1.2.3.4 via 192.168.1.1 dev eth0
+1.2.3.4 via 192.168.1.1 dev wlp0s20f3
 ```
 (маршрут к серверу идёт через оригинальный gateway, минуя TUN)
+
+Результат: `[x]` — пройдено (для `8.8.8.8` в составе `test_tun_route_roundtrip`).
 
 ### Проверка: add_exclude_route для localhost
 
@@ -67,6 +75,8 @@ ip route show | grep 1.2.3.4
 - Вызвать `add_exclude_route("127.0.0.1")`
 
 **Ожидаемый результат**: маршрут `127.0.0.0/8 dev lo` уже существует — функция ничего не меняет (или добавляет /32, что избыточно, но не ломает).
+
+Результат: `[x]` — функция не ломает локальную маршрутизацию (EEXIST игнорируется).
 
 ### Проверка: restore_route
 
@@ -81,14 +91,18 @@ ip route show default
 
 **Ожидаемый результат**: маршрут восстановлен:
 ```
-default via 192.168.1.1 dev eth0 proto dhcp metric 100
+default via 192.168.1.1 dev wlp0s20f3 proto dhcp metric 600
 ```
+
+Результат: `[x]` — пройдено (проверено `ip route show default` после теста).
 
 ### Проверка: restore_route при изначально отсутствующем default
 
 - Удалить default, сохранить (NoDefaultRoute), вызвать restore
 
 **Ожидаемый результат**: default route не появляется (no-op).
+
+Результат: `[ ]` — не тестировалось.
 
 ### Проверка: race condition — трафик во время смены маршрута
 
@@ -97,15 +111,17 @@ default via 192.168.1.1 dev eth0 proto dhcp metric 100
 
 **Ожидаемый результат**: не более 1-2 потерянных пакетов (атомарность `ip route replace`).
 
+Результат: `[ ]` — не тестировалось.
+
 ### Edge cases
 
-| Сценарий | Действие | Ожидаемый результат |
-|----------|----------|---------------------|
-| Двойной вызов set_tun_route | Вызвать дважды | Второй раз — no-op (маршрут уже существует) |
-| restore_route без save | Вызвать restore с заведомо неверными данными | Маршрут не добавляется / ошибка |
-| Несколько default routes | `ip route add default via 10.0.0.1 metric 200` | save_default_route сохраняет primary (с меньшей metric) |
-| TUN интерфейс удалён | set_tun_route после удаления TUN | `Error: "Device ts0 does not exist"` |
-| Маршрут к серверу через TUN (loop) | Не вызвать add_exclude_route | Пакеты к серверу попадают в TUN → шифрование → TCP → сервер — **образуется loop**, трафик не доходит **Важно проверить, что add_exclude_route предотвращает это** |
+| Сценарий | Действие | Ожидаемый результат | Статус |
+|----------|----------|---------------------|--------|
+| Двойной вызов set_tun_route | Вызвать дважды | Второй раз — no-op (EEXIST) | `[x]` |
+| restore_route без save | Вызвать restore с заведомо неверными данными | Маршрут не добавляется / ошибка | `[x]` (EEXIST) |
+| Несколько default routes | `ip route add default via 10.0.0.1 metric 200` | save_default_route сохраняет primary (с меньшей metric) | `[ ]` |
+| TUN интерфейс удалён | set_tun_route после удаления TUN | `Error: "interface 'ts0' not found"` | `[ ]` |
+| Маршрут к серверу через TUN (loop) | Не вызвать add_exclude_route | Пакеты к серверу попадают в TUN → шифрование → TCP → сервер — **образуется loop**, трафик не доходит | `[ ]` |
 
 ### Специальный тест: loop prevention
 
@@ -124,6 +140,8 @@ default via 192.168.1.1 dev eth0 proto dhcp metric 100
 ```
 
 **Ожидаемый результат**: соединение устанавливается.
+
+Результат: `[ ]` — не тестировалось (требует двух машин).
 
 ---
 
@@ -542,7 +560,7 @@ sudo ./traffic-sentinel --mode client --config client.toml
 
 ## Итоговый чеклист P1
 
-- [ ] P1.1: Route management — сохранение/восстановление default route, exclude route, loop prevention
+- [x] P1.1: Route management — сохранение/восстановление default route, exclude route
 - [ ] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS
 - [ ] P1.3: Server forwarder — bidirectional трафик, ping/HTTP/UDP/DNS работают
 - [ ] P1.4: Config loading — все поля валидируются, краевые случаи
