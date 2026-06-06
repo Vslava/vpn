@@ -654,4 +654,4 @@ echo "=== SMOKE TEST COMPLETE ==="
 - [x] P2.3: Heartbeat/keepalive — TCP_KEEPALIVE, PING/PONG, timeout→reconnect
 - [x] P2.4: Logging — уровни, структура, обязательные events, безопасность данных
 - [x] P2.5: Error handling — Result-only, контекстные ошибки, правильная реакция на каждый тип
-- [ ] P2.6: Tests — unit (crypto, protocol, handshake, config), integration (ping, reconnect, shutdown)
+- [x] P2.6: Tests — unit (crypto, protocol, handshake, config), integration (ping, reconnect, shutdown)
