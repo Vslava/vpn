@@ -30,29 +30,34 @@ pub async fn run_server(
         sig_cancel.cancel();
     });
 
-    let accept = tokio::select! {
-        result = listener.accept() => result,
-        _ = cancel.cancelled() => {
-            tracing::info!("Deleting TUN");
-            drop(tun);
-            tracing::info!("Shutdown complete");
-            return Ok(());
+    loop {
+        let stream = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            result = listener.accept() => {
+                let (stream, peer) = result?;
+                tracing::info!("server: client connected from {}", peer);
+                stream
+            }
+        };
+
+        let result = handle_client(stream, psk, tun.clone(), cancel.clone()).await;
+
+        if let Err(ref e) = result {
+            tracing::error!("server: client error: {}", e);
         }
-    };
 
-    let (stream, peer) = accept?;
-    tracing::info!("server: client connected from {}", peer);
+        if cancel.is_cancelled() {
+            break;
+        }
 
-    let result = handle_client(stream, psk, tun.clone(), cancel).await;
-
-    if let Err(ref e) = result {
-        tracing::error!("server: client error: {}", e);
+        tracing::warn!("Client disconnected, waiting for new connection...");
     }
 
     tracing::info!("Deleting TUN");
     drop(tun);
     tracing::info!("Shutdown complete");
-    result
+    Ok(())
 }
 
 pub async fn handle_client(
@@ -132,7 +137,7 @@ pub async fn handle_client(
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+                Err(e) => Err(Error::Io(std::io::Error::other(e.to_string()))),
             }
         }
         result = &mut h2 => {
@@ -141,7 +146,7 @@ pub async fn handle_client(
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+                Err(e) => Err(Error::Io(std::io::Error::other(e.to_string()))),
             }
         }
     }

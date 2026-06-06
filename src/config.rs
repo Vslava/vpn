@@ -19,6 +19,10 @@ pub struct ClientConfig {
     pub tun_ip: Option<String>,
     pub tun_netmask: Option<u8>,
     pub gateway: Option<String>,
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    #[serde(default)]
+    pub reconnect_max_delay: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,6 +316,8 @@ mod tests {
                 tun_ip: Some("10.0.0.2".to_string()),
                 tun_netmask: Some(30),
                 gateway: None,
+                max_retries: None,
+                reconnect_max_delay: None,
             }),
             server: None,
         };
@@ -331,6 +337,8 @@ mod tests {
                 tun_ip: Some("10.0.0.2".to_string()),
                 tun_netmask: Some(30),
                 gateway: Some("10.0.0.1".to_string()),
+                max_retries: None,
+                reconnect_max_delay: None,
             }),
             server: None,
         };
@@ -368,6 +376,8 @@ mod tests {
                 tun_ip: None,
                 tun_netmask: None,
                 gateway: None,
+                max_retries: None,
+                reconnect_max_delay: None,
             }),
             server: Some(ServerConfig {
                 listen: "0.0.0.0:8443".to_string(),

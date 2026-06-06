@@ -91,8 +91,10 @@ async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
     });
 
     let mtu = cfg.tunnel.mtu.unwrap_or(1400);
+    let max_retries = client_cfg.max_retries;
+    let reconnect_max_delay = client_cfg.reconnect_max_delay.unwrap_or(30);
 
-    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu).await {
+    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu, max_retries, reconnect_max_delay).await {
         tracing::error!("client error: {}", e);
     }
 }

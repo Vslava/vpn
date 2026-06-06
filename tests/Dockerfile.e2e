@@ -8,6 +8,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     ca-certificates \
     socat \
     iptables \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY target/release/traffic-sentinel /usr/local/bin/traffic-sentinel

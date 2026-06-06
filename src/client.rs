@@ -39,7 +39,7 @@ pub async fn run_client(
 
             let encoded = protocol::encode(&frame);
             writer.write_all(&encoded).await
-                .map_err(|e| Error::Io(e))?;
+                .map_err(Error::Io)?;
         }
     });
 
@@ -78,7 +78,7 @@ pub async fn run_client(
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+                Err(e) => Err(Error::Io(std::io::Error::other(e.to_string()))),
             }
         }
         result = &mut h2 => {
@@ -87,12 +87,42 @@ pub async fn run_client(
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
-                Err(e) => Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+                Err(e) => Err(Error::Io(std::io::Error::other(e.to_string()))),
             }
         }
     }
 }
 
+async fn run_client_session(
+    remote: std::net::SocketAddr,
+    psk: &[u8; 32],
+    tun: Arc<TunDevice>,
+    cancel: CancellationToken,
+) -> Result<(), Error> {
+    let mut stream = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(()),
+        result = crate::transport::connect(remote) => result.map_err(Error::Io)?,
+    };
+    tracing::info!("Connected to {}", remote);
+
+    let session_key = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(()),
+        result = crate::handshake::client_handshake(&mut stream, psk) => result?,
+    };
+    tracing::info!("Handshake complete, resuming");
+
+    let crypto = Arc::new(Crypto::new(&session_key));
+    run_client(tun, stream, crypto, cancel).await
+}
+
+fn reconnect_backoff(attempt: u32, max_delay_secs: u64) -> u64 {
+    let delay = 2u64.saturating_pow(attempt.min(31));
+    delay.min(max_delay_secs)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn run_client_full(
     remote: std::net::SocketAddr,
     psk: &[u8; 32],
@@ -100,21 +130,14 @@ pub async fn run_client_full(
     netmask: u8,
     gateway: std::net::Ipv4Addr,
     mtu: u16,
+    max_retries: Option<u32>,
+    reconnect_max_delay: u64,
 ) -> Result<(), Error> {
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
     tracing::info!("client: TUN ts0 created, IP {}/{}", tun_ip, netmask);
 
     let saved_route = crate::route::save_default_route().await?;
     tracing::info!("client: saved default route: {:?}", saved_route);
-
-    let mut stream = crate::transport::connect(remote).await
-        .map_err(|e| Error::Io(e))?;
-    tracing::info!("client: connected to {}", remote);
-
-    let session_key = crate::handshake::client_handshake(&mut stream, psk).await?;
-    tracing::info!("client: handshake complete");
-
-    let crypto = Arc::new(Crypto::new(&session_key));
 
     if let Some(ref route) = saved_route {
         let server_ip = match remote.ip() {
@@ -134,8 +157,40 @@ pub async fn run_client_full(
         sig_cancel.cancel();
     });
 
-    let forward_tun = tun.clone();
-    let result = run_client(forward_tun, stream, crypto, cancel).await;
+    let mut attempt = 0u32;
+    loop {
+        let result = run_client_session(remote, psk, tun.clone(), cancel.clone()).await;
+
+        match result {
+            Ok(()) => break,
+            Err(e) => {
+                if matches!(&e, Error::Handshake(_)) {
+                    tracing::error!("Fatal handshake error: {}", e);
+                    break;
+                }
+
+                if let Some(max) = max_retries {
+                    if attempt >= max {
+                        tracing::error!("Max retries ({}) exceeded", max);
+                        break;
+                    }
+                }
+
+                let delay = reconnect_backoff(attempt, reconnect_max_delay);
+                tracing::error!("TCP connection lost: {}", e);
+                tracing::warn!("Reconnecting in {}s...", delay);
+
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {
+                        attempt += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+    }
 
     tracing::info!("Restoring routes");
     if let Some(ref route) = saved_route {
@@ -147,9 +202,7 @@ pub async fn run_client_full(
     tracing::info!("Deleting TUN");
     drop(tun);
 
-    tracing::info!("Closing TCP connection");
-
     tracing::info!("Shutdown complete");
 
-    result
+    Ok(())
 }

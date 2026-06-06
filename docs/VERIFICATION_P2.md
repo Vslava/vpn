@@ -643,7 +643,7 @@ echo "=== SMOKE TEST COMPLETE ==="
 ## Итоговый чеклист P2
 
 - [x] P2.1: Graceful shutdown — SIGTERM/SIGINT восстанавливает routes + TUN + TCP
-- [ ] P2.2: Reconnection — exponential backoff, retry, reconnect with new handshake
+- [x] P2.2: Reconnection — exponential backoff, retry, reconnect with new handshake (Docker verification passed)
 - [ ] P2.3: Heartbeat/keepalive — TCP_KEEPALIVE, PING/PONG, timeout→reconnect
 - [ ] P2.4: Logging — уровни, структура, обязательные events, безопасность данных
 - [ ] P2.5: Error handling — Result-only, контекстные ошибки, правильная реакция на каждый тип
