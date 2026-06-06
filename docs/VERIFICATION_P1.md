@@ -163,12 +163,18 @@ let (client_key, server_key) = tokio::join!(
 assert_eq!(client_key, server_key);
 ```
 
+**Ожидаемый результат**: ключи совпадают.
+
+Результат: `[x]` — `test_client_server_handshake_matching_keys`.
+
 ### Проверка: handshake с неправильным PSK
 
 - Client: PSK_A
 - Server: PSK_B (PSK_A ≠ PSK_B)
 
-**Ожидаемый результат**: Server возвращает `Error::HandshakeFailed` (HMAC mismatch). Соединение закрывается.
+**Ожидаемый результат**: Server возвращает `Error::Handshake` (HMAC mismatch). Соединение закрывается.
+
+Результат: `[x]` — `test_client_server_wrong_psk`.
 
 ### Проверка: handshake с разными эфемерными ключами
 
@@ -177,6 +183,8 @@ assert_eq!(client_key, server_key);
 
 **Ожидаемый результат**: все 100 ключей различны.
 
+Результат: `[x]` — `test_perfect_forward_secrecy`.
+
 ### Проверка: replay handshake
 
 - Записать client_hello (public_key + HMAC) от предыдущей сессии
@@ -184,11 +192,15 @@ assert_eq!(client_key, server_key);
 
 **Ожидаемый результат**: handshake отклоняется (эфемерный ключ сервера изменился → итоговый shared secret другой). Если нет явного anti-replay — хотя бы уникальность ключа гарантирует безопасность.
 
+Результат: `[x]` — PFS гарантирует уникальность, отдельный anti-replay не реализован.
+
 ### Проверка: длина PSK не 32 байта
 
 - PSK = `[0xAB; 16]` (128 бит)
 
 **Ожидаемый результат**: ошибка валидации на старте (PSK должен быть 256 бит).
+
+Результат: `[x]` — проверяется типом `&[u8; 32]` (compile-time) + `parse_psk()` в `main.rs`.
 
 ### Проверка: таймаут handshake
 
@@ -196,6 +208,8 @@ assert_eq!(client_key, server_key);
 - Ждать 10 секунд
 
 **Ожидаемый результат**: сервер закрывает соединение по таймауту.
+
+Результат: `[x]` — `recv_and_verify_msg` использует `tokio::time::timeout(10s, read_exact)`.
 
 ### Проверка: handshake поверх реального TCP
 
@@ -205,16 +219,18 @@ assert_eq!(client_key, server_key);
 
 **Ожидаемый результат**: данные расшифрованы.
 
+Результат: `[x]` — `tests/handshake_integration.rs::test_handshake_over_real_tcp`.
+
 ### Edge cases
 
-| Сценарий | Действие | Ожидаемый результат |
-|----------|----------|---------------------|
-| PSK все нули | `[0u8; 32]` | Handshake работает (ключ валидный) |
-| PSK все 0xFF | `[0xFF; 32]` | Handshake работает |
-| Client отправляет > 32 байт public_key | Отправить 64 байта | Сервер читает только 32, остальное — следующий фрейм (no-op) |
-| Server отправляет > 32 байт | Аналогично | Клиент читает 32, остальное игнорируется |
-| HMAC подмена в пути | Изменить 1 байт HMAC | HMAC mismatch → Error::HandshakeFailed |
-| Public key подмена в пути | Изменить 1 байт public_key | Сервер принимает, но итоговый shared secret у клиента и сервера разный — дальнейшие пакеты не расшифруются |
+| Сценарий | Действие | Ожидаемый результат | Статус |
+|----------|----------|---------------------|--------|
+| PSK все нули | `[0u8; 32]` | Handshake работает (ключ валидный) | `[x]` |
+| PSK все 0xFF | `[0xFF; 32]` | Handshake работает | `[x]` |
+| Client отправляет > 32 байт public_key | Отправить 64 байта | Сервер читает только 32, остальное — следующий фрейм (no-op) | `[x]` |
+| Server отправляет > 32 байт | Аналогично | Клиент читает 32, остальное игнорируется | `[x]` |
+| HMAC подмена в пути | Изменить 1 байт HMAC | HMAC mismatch → Error::HandshakeFailed | `[x]` |
+| Public key подмена в пути | Изменить 1 байт public_key | Сервер принимает, но итоговый shared secret у клиента и сервера разный — дальнейшие пакеты не расшифруются | `[x]` |
 
 ---
 
@@ -561,7 +577,7 @@ sudo ./traffic-sentinel --mode client --config client.toml
 ## Итоговый чеклист P1
 
 - [x] P1.1: Route management — сохранение/восстановление default route, exclude route
-- [ ] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS
+- [x] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS, таймаут, edge cases
 - [ ] P1.3: Server forwarder — bidirectional трафик, ping/HTTP/UDP/DNS работают
 - [ ] P1.4: Config loading — все поля валидируются, краевые случаи
 - [ ] P1.5: Full integration — полный bootstrap, трафик, остановка, recovery

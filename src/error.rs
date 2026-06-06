@@ -5,6 +5,7 @@ pub enum Error {
     Io(io::Error),
     Tun(String),
     Crypto(String),
+    Handshake(String),
     Protocol(String),
     Config(String),
 }
@@ -15,6 +16,7 @@ impl std::fmt::Display for Error {
             Error::Io(e) => write!(f, "IO error: {}", e),
             Error::Tun(s) => write!(f, "TUN error: {}", s),
             Error::Crypto(s) => write!(f, "Crypto error: {}", s),
+            Error::Handshake(s) => write!(f, "Handshake error: {}", s),
             Error::Protocol(s) => write!(f, "Protocol error: {}", s),
             Error::Config(s) => write!(f, "Config error: {}", s),
         }
