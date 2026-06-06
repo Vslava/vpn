@@ -79,6 +79,6 @@ pub async fn create_tun(
 
     match tun::create_as_async(&config) {
         Ok(device) => Ok(TunDevice::new(device)),
-        Err(e) => Err(crate::error::Error::Tun(format!("failed to create TUN: {}", e))),
+        Err(e) => Err(crate::error::Error::Tun(format!("failed to create TUN: {e}"))),
     }
 }

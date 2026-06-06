@@ -23,6 +23,10 @@ pub struct ClientConfig {
     pub max_retries: Option<u32>,
     #[serde(default)]
     pub reconnect_max_delay: Option<u64>,
+    #[serde(default)]
+    pub heartbeat_interval: Option<u64>,
+    #[serde(default)]
+    pub heartbeat_timeout: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +49,7 @@ impl std::str::FromStr for Mode {
         match s.to_lowercase().as_str() {
             "client" => Ok(Mode::Client),
             "server" => Ok(Mode::Server),
-            _ => Err(format!("invalid mode '{}' — use 'client' or 'server'", s)),
+            _ => Err(format!("invalid mode '{s}' — use 'client' or 'server'")),
         }
     }
 }
@@ -53,9 +57,9 @@ impl std::str::FromStr for Mode {
 impl Config {
     pub fn from_file(path: &str) -> Result<Self, crate::error::Error> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| crate::error::Error::Config(format!("failed to read config: {}", e)))?;
+            .map_err(|e| crate::error::Error::Config(format!("failed to read config: {e}")))?;
         let cfg: Self = toml::from_str(&content)
-            .map_err(|e| crate::error::Error::Config(format!("failed to parse config: {}", e)))?;
+            .map_err(|e| crate::error::Error::Config(format!("failed to parse config: {e}")))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -109,12 +113,12 @@ impl Config {
 fn validate_psk(psk: &str) -> Result<(), crate::error::Error> {
     if psk.len() != 64 {
         return Err(crate::error::Error::Config(format!(
-            "PSK must be 64 hex chars (32 bytes), got {}",
-            psk.len()
+            "PSK must be 64 hex chars (32 bytes), got {psk_len}",
+            psk_len = psk.len()
         )));
     }
     hex::decode(psk).map_err(|e| {
-        crate::error::Error::Config(format!("invalid PSK hex: {}", e))
+        crate::error::Error::Config(format!("invalid PSK hex: {e}"))
     })?;
     Ok(())
 }
@@ -122,8 +126,7 @@ fn validate_psk(psk: &str) -> Result<(), crate::error::Error> {
 fn validate_mtu(mtu: u16) -> Result<(), crate::error::Error> {
     if mtu < 576 {
         return Err(crate::error::Error::Config(format!(
-            "MTU must be >= 576, got {}",
-            mtu
+            "MTU must be >= 576, got {mtu}"
         )));
     }
     Ok(())
@@ -131,14 +134,14 @@ fn validate_mtu(mtu: u16) -> Result<(), crate::error::Error> {
 
 fn validate_socket_addr(addr: &str) -> Result<(), crate::error::Error> {
     addr.parse::<std::net::SocketAddr>().map_err(|e| {
-        crate::error::Error::Config(format!("invalid socket address '{}': {}", addr, e))
+        crate::error::Error::Config(format!("invalid socket address '{addr}': {e}"))
     })?;
     Ok(())
 }
 
 fn validate_ip(ip: &str) -> Result<(), crate::error::Error> {
     ip.parse::<std::net::Ipv4Addr>().map_err(|e| {
-        crate::error::Error::Config(format!("invalid IP address '{}': {}", ip, e))
+        crate::error::Error::Config(format!("invalid IP address '{ip}': {e}"))
     })?;
     Ok(())
 }
@@ -146,8 +149,7 @@ fn validate_ip(ip: &str) -> Result<(), crate::error::Error> {
 fn validate_netmask(mask: u8) -> Result<(), crate::error::Error> {
     if mask == 0 || mask > 32 {
         return Err(crate::error::Error::Config(format!(
-            "netmask must be 1-32, got {}",
-            mask
+            "netmask must be 1-32, got {mask}"
         )));
     }
     Ok(())
@@ -318,6 +320,8 @@ mod tests {
                 gateway: None,
                 max_retries: None,
                 reconnect_max_delay: None,
+                heartbeat_interval: None,
+                heartbeat_timeout: None,
             }),
             server: None,
         };
@@ -339,6 +343,8 @@ mod tests {
                 gateway: Some("10.0.0.1".to_string()),
                 max_retries: None,
                 reconnect_max_delay: None,
+                heartbeat_interval: None,
+                heartbeat_timeout: None,
             }),
             server: None,
         };
@@ -378,6 +384,8 @@ mod tests {
                 gateway: None,
                 max_retries: None,
                 reconnect_max_delay: None,
+                heartbeat_interval: None,
+                heartbeat_timeout: None,
             }),
             server: Some(ServerConfig {
                 listen: "0.0.0.0:8443".to_string(),

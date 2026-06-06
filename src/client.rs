@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -6,44 +8,75 @@ use tokio_util::sync::CancellationToken;
 
 use crate::crypto::Crypto;
 use crate::error::Error;
-use crate::protocol::{self, Frame};
+use crate::protocol::{self, Frame, FLAG_DATA, FLAG_PING};
 use crate::tun::TunDevice;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_client(
     tun: Arc<TunDevice>,
     stream: TcpStream,
     crypto: Arc<Crypto>,
     cancel: CancellationToken,
+    heartbeat_interval: Option<u64>,
+    heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
-    let (mut reader, mut writer) = tokio::io::split(stream);
-    let seq = std::sync::atomic::AtomicU32::new(0);
+    crate::transport::set_keepalive(&stream)?;
 
+    let hb_interval = std::time::Duration::from_secs(heartbeat_interval.unwrap_or(30));
+    let hb_timeout = std::time::Duration::from_secs(heartbeat_timeout.unwrap_or(60));
+
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let seq = Arc::new(AtomicU32::new(0));
+
+    // Channel: heartbeat → h1 (PING frames to send)
+    let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+
+    // Channel: heartbeat → main (error signal)
+    let (err_tx, mut err_rx) = tokio::sync::mpsc::channel::<Error>(1);
+
+    // Shared: last time a frame was received from server
+    let last_rx = Arc::new(std::sync::Mutex::new(Instant::now()));
+
+    // ── h1: TUN → TCP (data frames) + channel → TCP (PING frames) ──
     let tun_tx = tun.clone();
     let crypto_tx = crypto.clone();
+    let seq_tx = seq.clone();
     let mut h1 = tokio::spawn(async move {
         loop {
-            let mut buf = vec![0u8; tun_tx.mtu() as usize];
-            let n = tun_tx.recv(&mut buf).await.map_err(Error::Io)?;
-            buf.truncate(n);
+            tokio::select! {
+                biased;
+                result = async {
+                    let mut buf = vec![0u8; tun_tx.mtu() as usize];
+                    let n = tun_tx.recv(&mut buf).await.map_err(Error::Io)?;
+                    buf.truncate(n);
 
-            let nonce = Crypto::generate_nonce();
-            let ciphertext = crypto_tx.encrypt(&nonce, &buf)?;
+                    let nonce = Crypto::generate_nonce();
+                    let ciphertext = crypto_tx.encrypt(&nonce, &buf)?;
 
-            let s = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let frame = Frame {
-                nonce,
-                seq: s,
-                flags: 0x00,
-                payload: ciphertext,
-            };
+                    let s = seq_tx.fetch_add(1, Ordering::Relaxed);
+                    let frame = Frame {
+                        nonce,
+                        seq: s,
+                        flags: FLAG_DATA,
+                        payload: ciphertext,
+                    };
 
-            let encoded = protocol::encode(&frame);
-            writer.write_all(&encoded).await
-                .map_err(Error::Io)?;
+                    let encoded = protocol::encode(&frame);
+                    writer.write_all(&encoded).await.map_err(Error::Io)?;
+                    Ok::<_, Error>(())
+                } => {
+                    result?;
+                }
+                Some(ping) = ping_rx.recv() => {
+                    writer.write_all(&ping).await.map_err(Error::Io)?;
+                }
+            }
         }
     });
 
+    // ── h2: TCP → TUN (handle PONG) ──
     let crypto_rx = crypto.clone();
+    let last_rx_h2 = last_rx.clone();
     let mut h2 = tokio::spawn(async move {
         loop {
             let mut len_buf = [0u8; 2];
@@ -56,25 +89,97 @@ pub async fn run_client(
 
             let frame = protocol::decode(&frame_data)?;
 
-            let plaintext = crypto_rx.decrypt(&frame.nonce, &frame.payload)?;
+            if frame.is_pong() {
+                *last_rx_h2.lock().unwrap() = Instant::now();
+                continue;
+            }
 
+            let plaintext = crypto_rx.decrypt(&frame.nonce, &frame.payload)?;
             tun.send(&plaintext).await.map_err(Error::Io)?;
+            *last_rx_h2.lock().unwrap() = Instant::now();
         }
     });
 
+    // ── Heartbeat: PING sender + timeout watchdog ──
+    let hb_cancel = cancel.clone();
+    let last_rx_hb = last_rx.clone();
+    let seq_hb = seq.clone();
+    let ping_tx_hb = ping_tx.clone();
+    let mut hb = tokio::spawn(async move {
+        // PING interval: send PING only when idle
+        let mut interval = tokio::time::interval(hb_interval);
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = hb_cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    let since_rx = {
+                        let last = last_rx_hb.lock().unwrap();
+                        last.elapsed()
+                    };
+                    if since_rx >= hb_interval {
+                        let nonce = Crypto::generate_nonce();
+                        let s = seq_hb.fetch_add(1, Ordering::Relaxed);
+                        let frame = Frame {
+                            nonce,
+                            seq: s,
+                            flags: FLAG_PING,
+                            payload: vec![],
+                        };
+                        let encoded = protocol::encode(&frame);
+                        if ping_tx_hb.send(encoded).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // ── Timeout watchdog: fire if no rx for hb_timeout ──
+    let cancel_watch = cancel.clone();
+    let last_rx_watch = last_rx.clone();
+    let err_tx_watch = err_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if cancel_watch.is_cancelled() {
+                break;
+            }
+            let elapsed = {
+                let last = last_rx_watch.lock().unwrap();
+                last.elapsed()
+            };
+            if elapsed >= hb_timeout {
+                err_tx_watch
+                    .send(Error::Timeout("heartbeat timeout".into()))
+                    .await
+                    .ok();
+                break;
+            }
+        }
+    });
+
+    // ── Main select ──
     tokio::select! {
         biased;
         _ = cancel.cancelled() => {
             h1.abort();
             h2.abort();
+            hb.abort();
             let _ = h1.await;
             let _ = h2.await;
+            let _ = hb.await;
             tracing::info!("forwarding cancelled");
             Ok(())
         }
         result = &mut h1 => {
             h2.abort();
+            hb.abort();
             let _ = h2.await;
+            let _ = hb.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
@@ -83,12 +188,31 @@ pub async fn run_client(
         }
         result = &mut h2 => {
             h1.abort();
+            hb.abort();
             let _ = h1.await;
+            let _ = hb.await;
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(Error::Io(std::io::Error::other(e.to_string()))),
             }
+        }
+        _ = &mut hb => {
+            h1.abort();
+            h2.abort();
+            let _ = h1.await;
+            let _ = h2.await;
+            tracing::error!("heartbeat sender exited unexpectedly");
+            Err(Error::Timeout("heartbeat failure".into()))
+        }
+        Some(e) = err_rx.recv() => {
+            h1.abort();
+            h2.abort();
+            hb.abort();
+            let _ = h1.await;
+            let _ = h2.await;
+            let _ = hb.await;
+            Err(e)
         }
     }
 }
@@ -98,6 +222,8 @@ async fn run_client_session(
     psk: &[u8; 32],
     tun: Arc<TunDevice>,
     cancel: CancellationToken,
+    heartbeat_interval: Option<u64>,
+    heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
     let mut stream = tokio::select! {
         biased;
@@ -109,12 +235,19 @@ async fn run_client_session(
     let session_key = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(()),
-        result = crate::handshake::client_handshake(&mut stream, psk) => result?,
+        result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            crate::handshake::client_handshake(&mut stream, psk),
+        ) => match result {
+            Ok(Ok(k)) => k,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(Error::Timeout("handshake timeout".into())),
+        },
     };
     tracing::info!("Handshake complete, resuming");
 
     let crypto = Arc::new(Crypto::new(&session_key));
-    run_client(tun, stream, crypto, cancel).await
+    run_client(tun, stream, crypto, cancel, heartbeat_interval, heartbeat_timeout).await
 }
 
 fn reconnect_backoff(attempt: u32, max_delay_secs: u64) -> u64 {
@@ -132,6 +265,8 @@ pub async fn run_client_full(
     mtu: u16,
     max_retries: Option<u32>,
     reconnect_max_delay: u64,
+    heartbeat_interval: Option<u64>,
+    heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
     tracing::info!("client: TUN ts0 created, IP {}/{}", tun_ip, netmask);
@@ -159,7 +294,7 @@ pub async fn run_client_full(
 
     let mut attempt = 0u32;
     loop {
-        let result = run_client_session(remote, psk, tun.clone(), cancel.clone()).await;
+        let result = run_client_session(remote, psk, tun.clone(), cancel.clone(), heartbeat_interval, heartbeat_timeout).await;
 
         match result {
             Ok(()) => break,

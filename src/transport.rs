@@ -1,5 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +29,14 @@ pub async fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 
 pub async fn write_frame(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
     stream.write_all(data).await
+}
+
+pub fn set_keepalive(stream: &TcpStream) -> io::Result<()> {
+    use socket2::{SockRef, TcpKeepalive};
+    let s = SockRef::from(stream);
+    let params = TcpKeepalive::new().with_time(Duration::from_secs(60));
+    s.set_tcp_keepalive(&params)?;
+    Ok(())
 }
 
 #[cfg(test)]

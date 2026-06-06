@@ -3,6 +3,20 @@ use crate::error::Error;
 const HEADER_LEN: usize = 24 + 4 + 1;
 const MAX_PAYLOAD: usize = 65506;
 
+pub const FLAG_DATA: u8 = 0x00;
+pub const FLAG_PING: u8 = 0x01;
+pub const FLAG_PONG: u8 = 0x02;
+
+impl Frame {
+    pub fn is_ping(&self) -> bool {
+        self.flags == FLAG_PING
+    }
+
+    pub fn is_pong(&self) -> bool {
+        self.flags == FLAG_PONG
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     pub nonce: [u8; 24],
@@ -39,24 +53,22 @@ pub fn decode(data: &[u8]) -> Result<Frame, Error> {
 
     if frame_len_no_header < HEADER_LEN {
         return Err(Error::Protocol(format!(
-            "frame length {} too small, minimum {}",
-            frame_len_no_header, HEADER_LEN
+            "frame length {frame_len_no_header} too small, minimum {HEADER_LEN}"
         )));
     }
 
     let payload_len = frame_len_no_header - HEADER_LEN;
     if payload_len > MAX_PAYLOAD {
         return Err(Error::Protocol(format!(
-            "payload length {} exceeds maximum {}",
-            payload_len, MAX_PAYLOAD
+            "payload length {payload_len} exceeds maximum {MAX_PAYLOAD}"
         )));
     }
 
     if data.len() < 2 + frame_len_no_header {
         return Err(Error::Protocol(format!(
-            "frame data too short: need {} bytes, got {}",
-            2 + frame_len_no_header,
-            data.len()
+            "frame data too short: need {need} bytes, got {got}",
+            need = 2 + frame_len_no_header,
+            got = data.len()
         )));
     }
 

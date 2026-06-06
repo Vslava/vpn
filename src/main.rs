@@ -19,9 +19,9 @@ fn setup_logging() {
 }
 
 fn parse_psk(hex: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex).map_err(|e| format!("invalid PSK hex: {}", e))?;
+    let bytes = hex::decode(hex).map_err(|e| format!("invalid PSK hex: {e}"))?;
     if bytes.len() != 32 {
-        return Err(format!("PSK must be 32 bytes (64 hex chars), got {}", bytes.len()));
+        return Err(format!("PSK must be 32 bytes (64 hex chars), got {got}", got = bytes.len()));
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
@@ -39,7 +39,7 @@ async fn main() {
     });
 
     let mode: config::Mode = mode_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
+        eprintln!("error: {e}");
         std::process::exit(1);
     });
 
@@ -49,17 +49,17 @@ async fn main() {
     });
 
     let cfg = config::Config::from_file(config_path).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
+        eprintln!("error: {e}");
         std::process::exit(1)
     });
 
     cfg.validate_for_mode(&mode).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
+        eprintln!("error: {e}");
         std::process::exit(1);
     });
 
     let psk = parse_psk(&cfg.tunnel.psk).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
+        eprintln!("error: {e}");
         std::process::exit(1);
     });
 
@@ -73,29 +73,31 @@ async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
     let client_cfg = cfg.client.as_ref().unwrap();
 
     let remote: SocketAddr = client_cfg.remote.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid remote address '{}': {}", client_cfg.remote, e);
+        eprintln!("error: invalid remote address '{}': {e}", client_cfg.remote);
         std::process::exit(1);
     });
 
     let tun_ip_str = client_cfg.tun_ip.as_deref().unwrap_or("10.0.0.2");
     let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid TUN IP '{}': {}", tun_ip_str, e);
+        eprintln!("error: invalid TUN IP '{tun_ip_str}': {e}");
         std::process::exit(1);
     });
     let netmask = client_cfg.tun_netmask.unwrap_or(30);
 
     let gw_str = client_cfg.gateway.as_deref().unwrap_or("10.0.0.1");
     let gateway: std::net::Ipv4Addr = gw_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid gateway '{}': {}", gw_str, e);
+        eprintln!("error: invalid gateway '{gw_str}': {e}");
         std::process::exit(1);
     });
 
     let mtu = cfg.tunnel.mtu.unwrap_or(1400);
     let max_retries = client_cfg.max_retries;
     let reconnect_max_delay = client_cfg.reconnect_max_delay.unwrap_or(30);
+    let heartbeat_interval = client_cfg.heartbeat_interval;
+    let heartbeat_timeout = client_cfg.heartbeat_timeout;
 
-    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu, max_retries, reconnect_max_delay).await {
-        tracing::error!("client error: {}", e);
+    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu, max_retries, reconnect_max_delay, heartbeat_interval, heartbeat_timeout).await {
+        tracing::error!("client error: {e}");
     }
 }
 
@@ -103,13 +105,13 @@ async fn run_server_mode(cfg: &config::Config, psk: [u8; 32]) {
     let server_cfg = cfg.server.as_ref().unwrap();
 
     let listen: SocketAddr = server_cfg.listen.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid listen address '{}': {}", server_cfg.listen, e);
+        eprintln!("error: invalid listen address '{}': {e}", server_cfg.listen);
         std::process::exit(1);
     });
 
     let tun_ip_str = server_cfg.tun_ip.as_deref().unwrap_or("10.0.0.1");
     let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid TUN IP '{}': {}", tun_ip_str, e);
+        eprintln!("error: invalid TUN IP '{tun_ip_str}': {e}");
         std::process::exit(1);
     });
     let netmask = server_cfg.tun_netmask.unwrap_or(30);
@@ -117,6 +119,6 @@ async fn run_server_mode(cfg: &config::Config, psk: [u8; 32]) {
     let mtu = cfg.tunnel.mtu.unwrap_or(1400);
 
     if let Err(e) = server::run_server(listen, &psk, tun_ip, mtu, netmask).await {
-        tracing::error!("server error: {}", e);
+        tracing::error!("server error: {e}");
     }
 }

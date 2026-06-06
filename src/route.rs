@@ -47,7 +47,7 @@ async fn get_ifname(handle: &Handle, ifindex: u32) -> Result<String, Error> {
             }
         }
     }
-    Err(Error::Config(format!("interface with index {} not found", ifindex)))
+    Err(Error::Config(format!("interface with index {ifindex} not found")))
 }
 
 async fn get_ifindex(handle: &Handle, name: &str) -> Result<u32, Error> {
@@ -62,7 +62,7 @@ async fn get_ifindex(handle: &Handle, name: &str) -> Result<u32, Error> {
             }
         }
     }
-    Err(Error::Config(format!("interface '{}' not found", name)))
+    Err(Error::Config(format!("interface '{name}' not found")))
 }
 
 fn find_default_route(msg: &RouteMessage) -> Option<(Ipv4Addr, u32, u32)> {

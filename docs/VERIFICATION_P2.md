@@ -301,6 +301,13 @@ kill -CONT $SERVER_PID
 
 ---
 
+**Docker verification**: `tests/docker_heartbeat.sh` — 14/14 checks passed
+- Test 1: idle 25s (2.5× heartbeat_interval=10) — PONG responses keep connection alive, no reconnect
+- Test 2: `docker pause` server → heartbeat timeout after heartbeat_timeout=15 → reconnect after `docker unpause`
+- Test 3: continuous ping 20s — active traffic suppresses PING, no reconnect
+
+---
+
 ## P2.4: Logging
 
 ### Проверка: уровни логирования
@@ -644,7 +651,7 @@ echo "=== SMOKE TEST COMPLETE ==="
 
 - [x] P2.1: Graceful shutdown — SIGTERM/SIGINT восстанавливает routes + TUN + TCP
 - [x] P2.2: Reconnection — exponential backoff, retry, reconnect with new handshake (Docker verification passed)
-- [ ] P2.3: Heartbeat/keepalive — TCP_KEEPALIVE, PING/PONG, timeout→reconnect
+- [x] P2.3: Heartbeat/keepalive — TCP_KEEPALIVE, PING/PONG, timeout→reconnect
 - [ ] P2.4: Logging — уровни, структура, обязательные events, безопасность данных
 - [ ] P2.5: Error handling — Result-only, контекстные ошибки, правильная реакция на каждый тип
 - [ ] P2.6: Tests — unit (crypto, protocol, handshake, config), integration (ping, reconnect, shutdown)
