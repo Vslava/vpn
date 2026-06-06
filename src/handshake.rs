@@ -9,10 +9,11 @@ type HmacSha256 = Hmac<Sha256>;
 
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
-fn hmac_sha256(key: &[u8; 32], data: &[u8; 32]) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts 32-byte key");
+fn hmac_sha256(key: &[u8; 32], data: &[u8; 32]) -> Result<[u8; 32], Error> {
+    let mut mac =
+        HmacSha256::new_from_slice(key).map_err(|_| Error::Crypto("HMAC key init failed".into()))?;
     mac.update(data);
-    mac.finalize().into_bytes().into()
+    Ok(mac.finalize().into_bytes().into())
 }
 
 fn derive_session_key(
@@ -36,7 +37,7 @@ async fn send_handshake_msg(
 ) -> Result<[u8; 32], Error> {
     let public = PublicKey::from(secret);
     let pub_bytes = public.to_bytes();
-    let hmac = hmac_sha256(psk, &pub_bytes);
+    let hmac = hmac_sha256(psk, &pub_bytes)?;
 
     let mut msg = [0u8; 64];
     msg[..32].copy_from_slice(&pub_bytes);
@@ -65,7 +66,7 @@ async fn recv_and_verify_msg(
     let mut received_hmac = [0u8; 32];
     received_hmac.copy_from_slice(&msg[32..]);
 
-    let expected_hmac = hmac_sha256(psk, &pub_bytes);
+    let expected_hmac = hmac_sha256(psk, &pub_bytes)?;
     if received_hmac != expected_hmac {
         return Err(Error::Handshake("HMAC mismatch".into()));
     }
@@ -145,8 +146,8 @@ mod tests {
     fn test_hmac_sha256_deterministic() {
         let key = [0xABu8; 32];
         let data = [0xBAu8; 32];
-        let h1 = hmac_sha256(&key, &data);
-        let h2 = hmac_sha256(&key, &data);
+        let h1 = hmac_sha256(&key, &data).unwrap();
+        let h2 = hmac_sha256(&key, &data).unwrap();
         assert_eq!(h1, h2);
     }
 
@@ -155,8 +156,8 @@ mod tests {
         let key1 = [0xABu8; 32];
         let key2 = [0xBAu8; 32];
         let data = [0u8; 32];
-        let h1 = hmac_sha256(&key1, &data);
-        let h2 = hmac_sha256(&key2, &data);
+        let h1 = hmac_sha256(&key1, &data).unwrap();
+        let h2 = hmac_sha256(&key2, &data).unwrap();
         assert_ne!(h1, h2);
     }
 
@@ -165,8 +166,8 @@ mod tests {
         let key = [0xABu8; 32];
         let data1 = [0u8; 32];
         let data2 = [1u8; 32];
-        let h1 = hmac_sha256(&key, &data1);
-        let h2 = hmac_sha256(&key, &data2);
+        let h1 = hmac_sha256(&key, &data1).unwrap();
+        let h2 = hmac_sha256(&key, &data2).unwrap();
         assert_ne!(h1, h2);
     }
 

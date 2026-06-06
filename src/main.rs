@@ -78,7 +78,13 @@ async fn main() {
 }
 
 async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
-    let client_cfg = cfg.client.as_ref().unwrap();
+    let client_cfg = match cfg.client.as_ref() {
+        Some(c) => c,
+        None => {
+            tracing::error!("client config missing after validation (this is a bug)");
+            std::process::exit(1);
+        }
+    };
 
     let remote: SocketAddr = client_cfg.remote.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid remote address '{}': {e}", client_cfg.remote);
@@ -110,7 +116,13 @@ async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
 }
 
 async fn run_server_mode(cfg: &config::Config, psk: [u8; 32]) {
-    let server_cfg = cfg.server.as_ref().unwrap();
+    let server_cfg = match cfg.server.as_ref() {
+        Some(c) => c,
+        None => {
+            tracing::error!("server config missing after validation (this is a bug)");
+            std::process::exit(1);
+        }
+    };
 
     let listen: SocketAddr = server_cfg.listen.parse().unwrap_or_else(|e| {
         eprintln!("error: invalid listen address '{}': {e}", server_cfg.listen);

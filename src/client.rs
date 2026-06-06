@@ -91,14 +91,14 @@ pub async fn run_client(
             let frame = protocol::decode(&frame_data)?;
 
             if frame.is_pong() {
-                *last_rx_h2.lock().unwrap() = Instant::now();
+                *last_rx_h2.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
                 continue;
             }
 
             let plaintext = crypto_rx.decrypt(&frame.nonce, &frame.payload)?;
             tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
             tun.send(&plaintext).await.map_err(Error::Io)?;
-            *last_rx_h2.lock().unwrap() = Instant::now();
+            *last_rx_h2.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         }
     });
 
@@ -118,7 +118,7 @@ pub async fn run_client(
                 _ = hb_cancel.cancelled() => break,
                 _ = interval.tick() => {
                     let since_rx = {
-                        let last = last_rx_hb.lock().unwrap();
+                        let last = last_rx_hb.lock().unwrap_or_else(|e| e.into_inner());
                         last.elapsed()
                     };
                     if since_rx >= hb_interval {
@@ -151,7 +151,7 @@ pub async fn run_client(
                 break;
             }
             let elapsed = {
-                let last = last_rx_watch.lock().unwrap();
+                let last = last_rx_watch.lock().unwrap_or_else(|e| e.into_inner());
                 last.elapsed()
             };
             if elapsed >= hb_timeout {
