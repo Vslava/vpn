@@ -58,14 +58,22 @@ async fn main() {
         std::process::exit(1);
     });
 
+    tracing::info!(path = %config_path, "Loaded config");
+
     let psk = parse_psk(&cfg.tunnel.psk).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
 
     match mode {
-        config::Mode::Client => run_client_mode(&cfg, psk).await,
-        config::Mode::Server => run_server_mode(&cfg, psk).await,
+        config::Mode::Client => {
+            tracing::info!(mode = "client", "Starting");
+            run_client_mode(&cfg, psk).await
+        }
+        config::Mode::Server => {
+            tracing::info!(mode = "server", "Starting");
+            run_server_mode(&cfg, psk).await
+        }
     }
 }
 

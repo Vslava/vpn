@@ -17,16 +17,16 @@ pub async fn run_server(
     netmask: u8,
 ) -> Result<(), Error> {
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
-    tracing::info!("server: TUN ts0 created, IP {}", tun_ip);
+    tracing::info!(iface = "ts0", ip = %tun_ip, "Created TUN interface");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("server: listening on {}", addr);
+    tracing::info!(addr = %addr, "Listening");
 
     let cancel = CancellationToken::new();
     let sig_cancel = cancel.clone();
     tokio::spawn(async move {
         crate::wait_for_shutdown().await;
-        tracing::info!("server: shutdown signal received");
+        tracing::info!("Shutdown signal received");
         sig_cancel.cancel();
     });
 
@@ -36,7 +36,7 @@ pub async fn run_server(
             _ = cancel.cancelled() => break,
             result = listener.accept() => {
                 let (stream, peer) = result?;
-                tracing::info!("server: client connected from {}", peer);
+                tracing::info!(peer = %peer, "Client connected");
                 stream
             }
         };
@@ -44,14 +44,14 @@ pub async fn run_server(
         let result = handle_client(stream, psk, tun.clone(), cancel.clone()).await;
 
         if let Err(ref e) = result {
-            tracing::error!("server: client error: {}", e);
+            tracing::error!(error = %e, "Client error");
         }
 
         if cancel.is_cancelled() {
             break;
         }
 
-        tracing::warn!("Client disconnected, waiting for new connection...");
+        tracing::warn!("Client disconnected, waiting for new connection");
     }
 
     tracing::info!("Deleting TUN");
@@ -67,7 +67,7 @@ pub async fn handle_client(
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let session_key = crate::handshake::server_handshake(&mut stream, psk).await?;
-    tracing::info!("server: handshake complete");
+    tracing::info!("Handshake complete");
 
     crate::transport::set_keepalive(&stream)?;
     stream.set_nodelay(true)?;
@@ -115,6 +115,7 @@ pub async fn handle_client(
                 }
 
                 let plaintext = crypto.decrypt(&frame.nonce, &frame.payload)?;
+                tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
                 tun.send(&plaintext).await.map_err(Error::Io)?;
             }
         })
@@ -138,6 +139,7 @@ pub async fn handle_client(
                         let ciphertext = crypto.encrypt(&nonce, &buf)?;
 
                         let s = seq_h2.fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(seq = s, len = buf.len(), "Packet sent");
                         let frame = Frame {
                             nonce,
                             seq: s,
@@ -164,7 +166,7 @@ pub async fn handle_client(
             h2.abort();
             let _ = h1.await;
             let _ = h2.await;
-            tracing::info!("server: client handling cancelled");
+            tracing::info!("Client handling cancelled");
             Ok(())
         }
         result = &mut h1 => {

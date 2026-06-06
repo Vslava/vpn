@@ -54,6 +54,7 @@ pub async fn run_client(
                     let ciphertext = crypto_tx.encrypt(&nonce, &buf)?;
 
                     let s = seq_tx.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(seq = s, len = buf.len(), "Packet sent");
                     let frame = Frame {
                         nonce,
                         seq: s,
@@ -95,6 +96,7 @@ pub async fn run_client(
             }
 
             let plaintext = crypto_rx.decrypt(&frame.nonce, &frame.payload)?;
+            tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
             tun.send(&plaintext).await.map_err(Error::Io)?;
             *last_rx_h2.lock().unwrap() = Instant::now();
         }
@@ -172,7 +174,7 @@ pub async fn run_client(
             let _ = h1.await;
             let _ = h2.await;
             let _ = hb.await;
-            tracing::info!("forwarding cancelled");
+            tracing::info!("Forwarding cancelled");
             Ok(())
         }
         result = &mut h1 => {
@@ -202,7 +204,7 @@ pub async fn run_client(
             h2.abort();
             let _ = h1.await;
             let _ = h2.await;
-            tracing::error!("heartbeat sender exited unexpectedly");
+            tracing::error!(component = "heartbeat", "Heartbeat sender exited unexpectedly");
             Err(Error::Timeout("heartbeat failure".into()))
         }
         Some(e) = err_rx.recv() => {
@@ -230,7 +232,7 @@ async fn run_client_session(
         _ = cancel.cancelled() => return Ok(()),
         result = crate::transport::connect(remote) => result.map_err(Error::Io)?,
     };
-    tracing::info!("Connected to {}", remote);
+    tracing::info!(remote = %remote, "Connected");
 
     let session_key = tokio::select! {
         biased;
@@ -269,10 +271,10 @@ pub async fn run_client_full(
     heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
-    tracing::info!("client: TUN ts0 created, IP {}/{}", tun_ip, netmask);
+    tracing::info!(iface = "ts0", ip = %tun_ip, netmask = netmask, "Created TUN interface");
 
     let saved_route = crate::route::save_default_route().await?;
-    tracing::info!("client: saved default route: {:?}", saved_route);
+    tracing::info!(?saved_route, "Saved default route");
 
     if let Some(ref route) = saved_route {
         let server_ip = match remote.ip() {
@@ -281,14 +283,14 @@ pub async fn run_client_full(
         };
         crate::route::add_exclude_route(server_ip, route).await?;
         crate::route::set_tun_route("ts0", gateway).await?;
-        tracing::info!("client: routes configured");
+        tracing::info!(gateway = %gateway, "Routes configured");
     }
 
     let cancel = CancellationToken::new();
     let sig_cancel = cancel.clone();
     tokio::spawn(async move {
         crate::wait_for_shutdown().await;
-        tracing::info!("client: shutdown signal received");
+        tracing::info!("Shutdown signal received");
         sig_cancel.cancel();
     });
 
@@ -300,20 +302,24 @@ pub async fn run_client_full(
             Ok(()) => break,
             Err(e) => {
                 if matches!(&e, Error::Handshake(_)) {
-                    tracing::error!("Fatal handshake error: {}", e);
+                    tracing::error!(error = %e, "Fatal handshake error");
                     break;
                 }
 
                 if let Some(max) = max_retries {
                     if attempt >= max {
-                        tracing::error!("Max retries ({}) exceeded", max);
+                        tracing::error!(max, "Max retries exceeded");
                         break;
                     }
                 }
 
                 let delay = reconnect_backoff(attempt, reconnect_max_delay);
-                tracing::error!("TCP connection lost: {}", e);
-                tracing::warn!("Reconnecting in {}s...", delay);
+                match &e {
+                    Error::Crypto(_) => tracing::error!(error = %e, "Crypto error"),
+                    Error::Timeout(_) => tracing::error!(error = %e, "Connection timeout"),
+                    _ => tracing::error!(error = %e, "Connection lost"),
+                }
+                tracing::warn!(retry = attempt, delay = delay, "Reconnecting");
 
                 tokio::select! {
                     biased;
@@ -330,7 +336,7 @@ pub async fn run_client_full(
     tracing::info!("Restoring routes");
     if let Some(ref route) = saved_route {
         if let Err(e) = crate::route::restore_route(route).await {
-            tracing::error!("client: failed to restore route: {}", e);
+            tracing::error!(error = %e, "Failed to restore route");
         }
     }
 
