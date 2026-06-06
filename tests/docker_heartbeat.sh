@@ -135,7 +135,7 @@ heartbeat_timeout = 25
 EOF
 
 start_server ts-hb1-server /tmp/ts-hb1-server.toml
-wait_for_log ts-hb1-server "listening on" 10 || { echo "FAIL: server start"; exit 1; }
+wait_for_log ts-hb1-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb1-client /tmp/ts-hb1-client.toml
 wait_for_log ts-hb1-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
@@ -158,8 +158,8 @@ echo "  Client log lines: $(echo "$CLIENT_LOG" | wc -l)"
 echo "  Last 3 lines:"
 echo "$CLIENT_LOG" | tail -3
 
-step "No TCP connection lost" sh -c 'docker logs ts-hb1-client 2>&1 | grep -qc "TCP connection lost" && false || true'
-step "No Reconnecting messages" sh -c 'docker logs ts-hb1-client 2>&1 | grep -qc "Reconnecting in" && false || true'
+step "No connection lost" sh -c 'docker logs ts-hb1-client 2>&1 | grep -cE "(Connection lost|Connection timeout)" | grep -q "^0$"'
+step "No Reconnecting messages" sh -c 'docker logs ts-hb1-client 2>&1 | grep -qc "Reconnecting" && false || true'
 
 docker rm -f ts-hb1-client ts-hb1-server > /dev/null 2>&1 || true
 
@@ -201,7 +201,7 @@ heartbeat_timeout = 15
 EOF
 
 start_server ts-hb2-server /tmp/ts-hb2-server.toml
-wait_for_log ts-hb2-server "listening on" 10 || { echo "FAIL: server start"; exit 1; }
+wait_for_log ts-hb2-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb2-client /tmp/ts-hb2-client.toml
 wait_for_log ts-hb2-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
@@ -216,7 +216,7 @@ echo "  Server container paused (cgroup freezer)..."
 echo "  Waiting 20s for heartbeat timeout..."
 sleep 20
 
-step "Client detected heartbeat error" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "TCP connection lost"'
+step "Client detected heartbeat timeout" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "Connection timeout"'
 
 # Unpause server — processes resume where they were frozen
 # Old TCP connection dies (client closed it) → server returns to accept loop
@@ -224,7 +224,7 @@ docker unpause ts-hb2-server > /dev/null
 echo "  Server unpaused..."
 
 # Client should reconnect (run_client_full handles the timeout error)
-step "Client reconnecting" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "Reconnecting in"'
+step "Client reconnecting" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "Reconnecting"'
 step "Client reconnected" wait_for_log ts-hb2-client "resuming" 30
 
 sleep 2
@@ -270,7 +270,7 @@ heartbeat_timeout = 15
 EOF
 
 start_server ts-hb3-server /tmp/ts-hb3-server.toml
-wait_for_log ts-hb3-server "listening on" 10 || { echo "FAIL: server start"; exit 1; }
+wait_for_log ts-hb3-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb3-client /tmp/ts-hb3-client.toml
 wait_for_log ts-hb3-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
@@ -288,7 +288,7 @@ sleep 20
 
 # Connection should remain alive — continuous traffic resets heartbeat timer
 step "Client still connected after active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -c "resuming" | grep -q "^1$"'
-step "No reconnection during active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -qc "Reconnecting in" && false || true'
+step "No reconnection during active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -qc "Reconnecting" && false || true'
 
 # Verify traffic still works
 step "Ping after active traffic" docker exec ts-hb3-client ping -c 2 -W 3 10.0.0.1

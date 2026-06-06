@@ -103,7 +103,7 @@ sed -i "s/SERVER_IP_PLACEHOLDER/$SERVER_IP/" "$CLIENT_TOML"
 
 echo "=== Waiting for server to listen ==="
 for i in $(seq 1 10); do
-    docker logs "$SERVER_NAME" 2>&1 | grep -q "listening on" && { echo "Server ready (attempt $i)"; break; }
+    docker logs "$SERVER_NAME" 2>&1 | grep -qi "listening" && { echo "Server ready (attempt $i)"; break; }
     [ "$i" -eq 10 ] && { echo "ERROR: Server did not start"; docker logs "$SERVER_NAME"; exit 1; }
     sleep 1
 done
@@ -125,7 +125,7 @@ docker run -d --name "$CLIENT_NAME" \
 
 echo "=== Waiting for client handshake ==="
 for i in $(seq 1 10); do
-    docker logs "$CLIENT_NAME" 2>&1 | grep -q "handshake complete" && { echo "Client ready (attempt $i)"; break; }
+    docker logs "$CLIENT_NAME" 2>&1 | grep -qi "handshake complete" && { echo "Client ready (attempt $i)"; break; }
     [ "$i" -eq 10 ] && { echo "ERROR: Client handshake failed"; docker logs "$SERVER_NAME"; docker logs "$CLIENT_NAME"; exit 1; }
     sleep 1
 done

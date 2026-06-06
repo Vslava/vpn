@@ -139,7 +139,7 @@ reconnect_max_delay = 30
 EOF
 
 start_server ts-server-1 /tmp/ts-r1-server.toml
-wait_for_log ts-server-1 "listening on" 10 || { echo "FAIL: server start"; exit 1; }
+wait_for_log ts-server-1 "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-client-1 /tmp/ts-r1-client.toml
 wait_for_log ts-client-1 "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
@@ -150,13 +150,13 @@ step "Ping before kill" docker exec ts-client-1 ping -c 2 -W 3 10.0.0.1
 docker exec ts-server-1 sh -c 'pkill -TERM -f traffic-sentinel' 2>/dev/null || true
 sleep 3
 
-step "Client detected TCP connection lost" docker logs ts-client-1 2>&1 | grep -q "TCP connection lost"
-step "Client started reconnect attempt" docker logs ts-client-1 2>&1 | grep -q "Reconnecting in"
+step "Client detected connection lost" sh -c 'docker logs ts-client-1 2>&1 | grep -Eq "(Connection lost|Connection timeout)"'
+step "Client started reconnect attempt" docker logs ts-client-1 2>&1 | grep -q "Reconnecting"
 
 # Restart server container (same IP, same config)
 echo "  Restarting server container..."
 docker start ts-server-1 > /dev/null
-wait_for_log ts-server-1 "listening on" 15 || { echo "FAIL: server restart"; exit 1; }
+wait_for_log ts-server-1 "[Ll]istening" 15 || { echo "FAIL: server restart"; exit 1; }
 
 step "Client resumed (Handshake complete)" wait_for_log ts-client-1 "resuming" 30
 
@@ -201,7 +201,7 @@ reconnect_max_delay = 30
 EOF
 
 start_server ts-server-2 /tmp/ts-r2-server.toml
-wait_for_log ts-server-2 "listening on" 10
+wait_for_log ts-server-2 "[Ll]istening" 10
 
 start_client ts-client-2 /tmp/ts-r2-client.toml
 wait_for_log ts-client-2 "resuming" 15
@@ -222,12 +222,12 @@ sleep 42
 
 LOG=$(docker logs ts-client-2 2>&1) || true
 
-step "Reconnect attempts present" echo "$LOG" | grep -q "Reconnecting in"
+step "Reconnect attempts present" echo "$LOG" | grep -q "Reconnecting"
 step "Max retries exceeded" echo "$LOG" | grep -q "Max retries"
 step "Restoring routes" echo "$LOG" | grep -q "Restoring routes"
 step "Shutdown complete" echo "$LOG" | grep -q "Shutdown complete"
 
-DELAYS=$(echo "$LOG" | grep -oP 'Reconnecting in \K\d+' || true)
+DELAYS=$(echo "$LOG" | grep -oP 'delay=\K\d+' || true)
 echo "  Backoff delays: $DELAYS"
 COUNT=$(echo "$DELAYS" | wc -l)
 step "Backoff with ≥3 steps" test "$COUNT" -ge 3
@@ -270,7 +270,7 @@ EOF
 done
 
 start_server ts-server-3 /tmp/ts-r3-server.toml
-wait_for_log ts-server-3 "listening on" 10
+wait_for_log ts-server-3 "[Ll]istening" 10
 
 start_client ts-client-3a /tmp/ts-r3-c1.toml
 wait_for_log ts-client-3a "resuming" 15
@@ -328,7 +328,7 @@ reconnect_max_delay = 30
 EOF
 
 start_server ts-server-4 /tmp/ts-r4-server.toml
-wait_for_log ts-server-4 "listening on" 10
+wait_for_log ts-server-4 "[Ll]istening" 10
 
 start_client ts-client-4 /tmp/ts-r4-client.toml
 wait_for_log ts-client-4 "resuming" 15
@@ -342,7 +342,7 @@ sleep 2
 docker exec ts-server-4 sh -c 'pkill -TERM -f traffic-sentinel' 2>/dev/null || true
 sleep 3
 
-step "Reconnect started after server kill" sh -c 'docker logs ts-client-4 2>&1 | grep -q "Reconnecting in"'
+step "Reconnect started after server kill" sh -c 'docker logs ts-client-4 2>&1 | grep -q "Reconnecting"'
 
 # Send SIGTERM directly to traffic-sentinel on the client (not PID 1 sh)
 docker exec ts-client-4 sh -c 'pkill -TERM -f traffic-sentinel' 2>/dev/null || true
