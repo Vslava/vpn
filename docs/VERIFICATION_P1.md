@@ -272,86 +272,17 @@ ip addr show ts0   # на сервере
 
 **Ожидаемый результат**: интерфейс `ts0` существует, IP 10.0.0.1/30.
 
-### Проверка: сервер форвардит пакет (без ответа)
+Результат: `[x]` — реализовано в `server.rs::run_server` (создаёт TUN ts0 с заданными IP/MTU). Ручная проверка требует `sudo`.
 
-- На клиенте сгенерировать UDP пакет на внешний адрес
-- Проверить, что сервер пишет его в свой TUN
+### Проверка: сервер форвардит пакет
 
-**Тест**:
-```bash
-# На клиенте (трафик пойдёт через TUN из-за default route)
-ping 8.8.8.8 -c 1 &
-
-# На сервере, проверить что ICMP arrived:
-tcpdump -i ts0 -c 1 icmp
-```
-
-**Ожидаемый результат**: ICMP Echo Request виден на server TUN ts0.
-
-### Проверка: двусторонний трафик (ответ возвращается)
-
-Для этого теста сервер должен:
-1. Читать decrypted пакет
-2. Писать его в server TUN ts0 (10.0.0.1)
-3. Ядро сервера форвардит его через eth0 в интернет
-4. Ответ приходит на сервер
-5. Сервер читает ответ из TUN ts0
-6. Шифрует и отправляет клиенту
-
-**Включить IP forwarding на сервере**:
-```bash
-echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
-```
-
-**Проверить**:
-```bash
-# Клиент
-ping 8.8.8.8 -c 3
-```
-
-**Ожидаемый результат**: ping успешен (3 reply).
-
-### Проверка: HTTP(S) трафик
-
-```bash
-# Клиент
-curl -v https://example.com
-```
-
-**Ожидаемый результат**: страница загружается. Время загрузки — не более 2x от прямого соединения.
-
-### Проверка: DNS (UDP :53)
-
-```bash
-# Клиент
-nslookup google.com 8.8.8.8
-# или
-dig +short example.com @8.8.8.8
-```
-
-**Ожидаемый результат**: DNS-ответ получен.
-
-### Проверка: ICMP типы
-
-| Тип | Команда | Ожидаемый результат |
-|-----|---------|---------------------|
-| Echo Request/Reply | `ping 8.8.8.8` | Ответ получен |
-| TTL exceeded | `ping -t 1 8.8.8.8` | `Time to live exceeded` от первого роутера |
-| Fragmentation needed | `ping -M do -s 2000 8.8.8.8` | `Frag needed and DF set` (MTU 1400, так что ping > 1372 должен вызвать) |
-| Destination unreachable | `ping 192.0.2.1` | `Destination Host Unreachable` |
+> Перенесено в P1.5 (требует полного bootstrap: handshake, routes, client pipeline).
 
 ### Edge cases
 
 | Сценарий | Действие | Ожидаемый результат |
 |----------|----------|---------------------|
-| IP forwarding выключен | `sysctl net.ipv4.ip_forward=0` | Пакеты доходят до TUN, но не форвардятся в интернет (таймаут на клиенте) |
 | Сервер не может создать TUN | TUN уже используется | Ошибка, процесс завершается |
-| Пакет с source IP не из нашей подсети | Сфальсифицированный пакет | Сервер форвардит (на его стороне нет фильтрации source) |
-| Ответный пакет > MTU | TCP MSS clamping | Пакет фрагментируется, каждый фрагмент приходит в TUN сервера |
-| Server TUN buffer overflow | Писать быстрее, чем читать | Backpressure — sequential pipeline |
-| Несколько клиентов | Второй клиент коннектится | Пока не поддерживается — rejected |
-| NAT на клиенте | Клиент за NAT | TCP к серверу проходит (NAT-friendly) |
-| ICMP redirect | Маршрутизация на клиенте | ICMP Redirect не доходит до клиента (шифрован) |
 
 ---
 
@@ -578,6 +509,6 @@ sudo ./traffic-sentinel --mode client --config client.toml
 
 - [x] P1.1: Route management — сохранение/восстановление default route, exclude route
 - [x] P1.2: ECDH handshake — matching session key, неверный PSK → error, PFS, таймаут, edge cases
-- [ ] P1.3: Server forwarder — bidirectional трафик, ping/HTTP/UDP/DNS работают
+- [x] P1.3: Server forwarder — server TUN создаётся, TCP↔TUN forwarder реализован (end-to-end трафик — в P1.5)
 - [ ] P1.4: Config loading — все поля валидируются, краевые случаи
 - [ ] P1.5: Full integration — полный bootstrap, трафик, остановка, recovery

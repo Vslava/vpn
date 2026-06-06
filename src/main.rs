@@ -65,7 +65,7 @@ async fn main() {
 
     match mode {
         config::Mode::Client => run_client_mode(&cfg, crypto, mtu).await,
-        config::Mode::Server => run_server_mode(&cfg, crypto).await,
+        config::Mode::Server => run_server_mode(&cfg, &psk, mtu).await,
     }
 }
 
@@ -105,7 +105,7 @@ async fn run_client_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>, mtu:
     }
 }
 
-async fn run_server_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>) {
+async fn run_server_mode(cfg: &config::Config, psk: &[u8; 32], mtu: u16) {
     let server_cfg = cfg.server.as_ref().unwrap_or_else(|| {
         eprintln!("error: missing [server] section in config");
         std::process::exit(1);
@@ -116,7 +116,14 @@ async fn run_server_mode(cfg: &config::Config, crypto: Arc<crypto::Crypto>) {
         std::process::exit(1);
     });
 
-    if let Err(e) = server::run_server(listen, crypto).await {
+    let tun_ip_str = server_cfg.tun_ip.as_deref().unwrap_or("10.0.0.1/30");
+    let tun_ip: std::net::Ipv4Addr = tun_ip_str.split('/').next().unwrap().parse().unwrap_or_else(|e| {
+        eprintln!("error: invalid TUN IP '{}': {}", tun_ip_str, e);
+        std::process::exit(1);
+    });
+
+    tracing::info!("server: creating TUN ts0, IP {}", tun_ip);
+    if let Err(e) = server::run_server(listen, psk, tun_ip, mtu).await {
         tracing::error!("server error: {}", e);
     }
 }
