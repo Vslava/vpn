@@ -54,6 +54,7 @@ remote = "SERVER_IP:8443"
 - L3-туннель (TCP, UDP, ICMP) через TUN-интерфейс
 - Сквозное шифрование: XChaCha20-Poly1305 + X25519 ECDH + PSK (perfect forward secrecy)
 - Автоматическое управление маршрутами (сохранение/восстановление default route)
+- Автоматическая настройка NAT (MASQUERADE) на сервере через iptables
 - Graceful shutdown (SIGTERM/SIGINT → восстановление маршрутов, удаление TUN)
 - Reconnect с exponential backoff (клиент)
 - Heartbeat/PING-PONG для детекта разрыва TCP

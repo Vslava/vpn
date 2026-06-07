@@ -93,7 +93,6 @@ docker run -d --name "$SERVER_NAME" \
         done
         socat TCP-LISTEN:9999,bind=10.0.0.1,fork,reuseaddr EXEC:cat &
         echo "socat echo server started on 10.0.0.1:9999"
-        iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
         wait $TS_PID
     ' > /dev/null
 

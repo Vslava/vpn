@@ -19,6 +19,19 @@ pub async fn run_server(
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
     tracing::info!(iface = "ts0", ip = %tun_ip, "Created TUN interface");
 
+    let ext_iface = crate::route::save_default_route()
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.ifname);
+
+    if let Some(ref iface) = ext_iface {
+        crate::nat::setup_nat(iface).await?;
+    } else {
+        tracing::warn!("No default route found; skipping NAT setup. \
+            Return traffic from the internet may not reach the tunnel.");
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr = %addr, "Listening");
 
@@ -54,6 +67,9 @@ pub async fn run_server(
         tracing::warn!("Client disconnected, waiting for new connection");
     }
 
+    if let Some(ref iface) = ext_iface {
+        let _ = crate::nat::cleanup_nat(iface).await;
+    }
     tracing::info!("Deleting TUN");
     drop(tun);
     tracing::info!("Shutdown complete");

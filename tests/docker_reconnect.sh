@@ -62,7 +62,6 @@ start_server() {
             mkdir -p /dev/net
             [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
             chmod 666 /dev/net/tun
-            iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
             traffic-sentinel --mode server --config /etc/ts.toml
         ' > /dev/null
 }
