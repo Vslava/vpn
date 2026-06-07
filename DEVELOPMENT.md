@@ -7,7 +7,8 @@ P2 (Production Ready) завершён. Текущий этап — multi-client
 ## Тестирование
 
 ```bash
-cargo test --all          # unit + integration тесты
+cargo test --lib          # unit-тесты (68 тестов)
+cargo test --tests        # интеграционные тесты (без sudo некоторые ignored)
 cargo clippy --all        # lint
 cargo llvm-cov --all      # покрытие (требуется cargo-llvm-cov)
 

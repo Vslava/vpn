@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use clap::Parser;
-use traffic_sentinel::{client, config, server};
+use traffic_sentinel::{checks, client, config, server};
 
 #[derive(Parser)]
 #[command(name = "traffic-sentinel", about = "Encrypted VPN tunnel")]
@@ -64,6 +64,20 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+
+    let check_mode = match mode {
+        config::Mode::Client => checks::Mode::Client,
+        config::Mode::Server => checks::Mode::Server,
+    };
+    let failures = checks::run_preflight_checks(check_mode);
+    if !failures.is_empty() {
+        eprintln!("\nPreflight checks failed:\n");
+        for (name, msg) in &failures {
+            eprintln!("  ✗ {name}: {msg}");
+        }
+        eprintln!("\n{} check(s) failed. Aborting.", failures.len());
+        std::process::exit(1);
+    }
 
     match mode {
         config::Mode::Client => {
