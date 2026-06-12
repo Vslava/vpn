@@ -1,13 +1,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use crate::crypto::Crypto;
 use crate::error::Error;
 use crate::protocol::{self, Frame, FLAG_PONG};
 use crate::tun::TunDevice;
+
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub async fn run_server(
     addr: std::net::SocketAddr,
@@ -32,7 +35,7 @@ pub async fn run_server(
             Return traffic from the internet may not reach the tunnel.");
     }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let socket = Arc::new(crate::transport::udp_bind(addr).await?);
     tracing::info!(addr = %addr, "Listening");
 
     let cancel = CancellationToken::new();
@@ -44,17 +47,31 @@ pub async fn run_server(
     });
 
     loop {
-        let stream = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => break,
-            result = listener.accept() => {
-                let (stream, peer) = result?;
-                tracing::info!(peer = %peer, "Client connected");
-                stream
+        let (session_key, client_addr) = match crate::handshake::server_handshake(&socket, psk).await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                tracing::error!(error = %e, "Handshake failed, retrying");
+                continue;
             }
         };
+        tracing::info!(peer = %client_addr, "Handshake complete");
 
-        let result = handle_client(stream, psk, tun.clone(), cancel.clone()).await;
+        let crypto = Arc::new(Crypto::new(&session_key));
+        let seq = Arc::new(AtomicU32::new(0));
+
+        let result = handle_client(
+            socket.clone(),
+            tun.clone(),
+            client_addr,
+            crypto,
+            seq,
+            cancel.clone(),
+        )
+        .await;
 
         if let Err(ref e) = result {
             tracing::error!(error = %e, "Client error");
@@ -77,40 +94,38 @@ pub async fn run_server(
 }
 
 pub async fn handle_client(
-    mut stream: tokio::net::TcpStream,
-    psk: &[u8; 32],
+    socket: Arc<UdpSocket>,
     tun: Arc<TunDevice>,
+    client_addr: std::net::SocketAddr,
+    crypto: Arc<Crypto>,
+    seq: Arc<AtomicU32>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let session_key = crate::handshake::server_handshake(&mut stream, psk).await?;
-    tracing::info!("Handshake complete");
-
-    crate::transport::set_keepalive(&stream)?;
-    stream.set_nodelay(true)?;
-
-    let (mut reader, mut writer) = tokio::io::split(stream);
-
-    let crypto = Arc::new(Crypto::new(&session_key));
-    let seq = Arc::new(AtomicU32::new(0));
-
-    // Channel: h1 (PING handler) → h2 (TCP writer) for PONG frames
     let (pong_tx, mut pong_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
 
-    // h1: TCP → TUN (handles PING → sends PONG via channel)
+    // h1: UDP → TUN (handles PING → sends PONG via channel)
     let mut h1 = {
-        let crypto = crypto.clone();
+        let socket = socket.clone();
         let tun = tun.clone();
+        let crypto = crypto.clone();
         let seq_h1 = seq.clone();
         tokio::spawn(async move {
-            loop {
-                let mut len_buf = [0u8; 2];
-                reader.read_exact(&mut len_buf).await.map_err(Error::Io)?;
-                let frame_len = u16::from_be_bytes(len_buf) as usize;
-                let mut frame_data = vec![0u8; 2 + frame_len];
-                frame_data[..2].copy_from_slice(&len_buf);
-                reader.read_exact(&mut frame_data[2..]).await.map_err(Error::Io)?;
+            let mut buf = vec![0u8; 65535];
 
-                let frame = protocol::decode(&frame_data)?;
+            loop {
+                let (n, peer) = tokio::time::timeout(
+                    CLIENT_IDLE_TIMEOUT,
+                    socket.recv_from(&mut buf),
+                )
+                .await
+                .map_err(|_| Error::Timeout("client idle timeout".into()))??;
+
+                if peer != client_addr {
+                    tracing::debug!(peer = %peer, "Ignoring datagram from unknown source");
+                    continue;
+                }
+
+                let frame = protocol::decode(&buf[..n])?;
 
                 if frame.is_ping() {
                     let nonce = Crypto::generate_nonce();
@@ -121,7 +136,9 @@ pub async fn handle_client(
                         flags: FLAG_PONG,
                         payload: vec![],
                     };
-                    pong_tx.send(protocol::encode(&pong)).await
+                    pong_tx
+                        .send(protocol::encode(&pong))
+                        .await
                         .map_err(|_| Error::Io(std::io::Error::other("pong channel closed")))?;
                     continue;
                 }
@@ -137,10 +154,11 @@ pub async fn handle_client(
         })
     };
 
-    // h2: TUN → TCP + channel (PONG) → TCP
+    // h2: TUN → UDP + channel (PONG) → UDP
     let mut h2 = {
-        let crypto = crypto.clone();
+        let socket = socket.clone();
         let tun = tun.clone();
+        let crypto = crypto.clone();
         let seq_h2 = seq.clone();
         tokio::spawn(async move {
             loop {
@@ -164,11 +182,11 @@ pub async fn handle_client(
                         };
 
                         let encoded = protocol::encode(&frame);
-                        writer.write_all(&encoded).await.map_err(Error::Io)?;
+                        socket.send_to(&encoded, client_addr).await.map_err(Error::Io)?;
                         Ok::<_, Error>(())
                     } => { result?; }
                     Some(pong) = pong_rx.recv() => {
-                        writer.write_all(&pong).await.map_err(Error::Io)?;
+                        socket.send_to(&pong, client_addr).await.map_err(Error::Io)?;
                     }
                 }
             }
@@ -205,5 +223,3 @@ pub async fn handle_client(
         }
     }
 }
-
-

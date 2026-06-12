@@ -33,9 +33,8 @@ impl Frame {
 
 pub fn encode(frame: &Frame) -> Vec<u8> {
     let total_len = HEADER_LEN + frame.payload.len();
-    let mut buf = Vec::with_capacity(2 + total_len);
+    let mut buf = Vec::with_capacity(total_len);
 
-    buf.extend_from_slice(&(total_len as u16).to_be_bytes());
     buf.extend_from_slice(&frame.nonce);
     buf.extend_from_slice(&frame.seq.to_be_bytes());
     buf.push(frame.flags);
@@ -45,39 +44,26 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
 }
 
 pub fn decode(data: &[u8]) -> Result<Frame, Error> {
-    if data.len() < 2 {
-        return Err(Error::Protocol("frame too short for length header".into()));
-    }
-
-    let frame_len_no_header = u16::from_be_bytes([data[0], data[1]]) as usize;
-
-    if frame_len_no_header < HEADER_LEN {
+    if data.len() < HEADER_LEN {
         return Err(Error::Protocol(format!(
-            "frame length {frame_len_no_header} too small, minimum {HEADER_LEN}"
+            "frame too short: got {got} bytes, need at least {HEADER_LEN}",
+            got = data.len()
         )));
     }
 
-    let payload_len = frame_len_no_header - HEADER_LEN;
+    let payload_len = data.len() - HEADER_LEN;
     if payload_len > MAX_PAYLOAD {
         return Err(Error::Protocol(format!(
             "payload length {payload_len} exceeds maximum {MAX_PAYLOAD}"
         )));
     }
 
-    if data.len() < 2 + frame_len_no_header {
-        return Err(Error::Protocol(format!(
-            "frame data too short: need {need} bytes, got {got}",
-            need = 2 + frame_len_no_header,
-            got = data.len()
-        )));
-    }
-
     let mut nonce = [0u8; 24];
-    nonce.copy_from_slice(&data[2..26]);
+    nonce.copy_from_slice(&data[0..24]);
 
-    let seq = u32::from_be_bytes([data[26], data[27], data[28], data[29]]);
-    let flags = data[30];
-    let payload = data[31..(2 + frame_len_no_header)].to_vec();
+    let seq = u32::from_be_bytes([data[24], data[25], data[26], data[27]]);
+    let flags = data[28];
+    let payload = data[29..].to_vec();
 
     Ok(Frame {
         nonce,
@@ -119,30 +105,28 @@ mod tests {
         };
 
         let encoded = encode(&frame);
-        let total_len = HEADER_LEN + 10;
 
-        assert_eq!(&encoded[0..2], &(total_len as u16).to_be_bytes());
-        assert_eq!(&encoded[2..26], &[0x01u8; 24]);
-        assert_eq!(&encoded[26..30], &[0xDE, 0xAD, 0xBE, 0xEF]);
-        assert_eq!(encoded[30], 0xAB);
-        assert_eq!(&encoded[31..], &[0x42; 10]);
+        assert_eq!(&encoded[0..24], &[0x01u8; 24]);
+        assert_eq!(&encoded[24..28], &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(encoded[28], 0xAB);
+        assert_eq!(&encoded[29..], &[0x42; 10]);
+        // No length prefix: total = 24 + 4 + 1 + 10 = 39
+        assert_eq!(encoded.len(), 39);
     }
 
     #[test]
     fn test_decode_too_short() {
-        assert!(decode(&[0x00, 0x01]).is_err());
+        assert!(decode(&[0x00; 10]).is_err());
     }
 
     #[test]
-    fn test_decode_zero_length() {
-        assert!(decode(&[0x00, 0x00]).is_err());
+    fn test_decode_empty() {
+        assert!(decode(&[]).is_err());
     }
 
     #[test]
     fn test_decode_frame_too_large() {
-        let mut data = vec![0u8; 2 + HEADER_LEN + MAX_PAYLOAD + 1];
-        let large_len = (HEADER_LEN + MAX_PAYLOAD + 1) as u16;
-        data[..2].copy_from_slice(&large_len.to_be_bytes());
+        let data = vec![0u8; HEADER_LEN + MAX_PAYLOAD + 1];
         assert!(decode(&data).is_err());
     }
 
@@ -165,5 +149,46 @@ mod tests {
             let decoded = decode(&encoded).unwrap();
             assert_eq!(decoded.payload.len(), *payload_len);
         }
+    }
+
+    #[test]
+    fn test_encoded_len() {
+        let frame = Frame {
+            nonce: [0u8; 24],
+            seq: 0,
+            flags: 0,
+            payload: vec![0x42; 100],
+        };
+        assert_eq!(frame.encoded_len(), 24 + 4 + 1 + 100);
+    }
+
+    #[test]
+    fn test_flags_ping_pong() {
+        let ping = Frame {
+            nonce: [0u8; 24],
+            seq: 0,
+            flags: FLAG_PING,
+            payload: vec![],
+        };
+        assert!(ping.is_ping());
+        assert!(!ping.is_pong());
+
+        let pong = Frame {
+            nonce: [0u8; 24],
+            seq: 0,
+            flags: FLAG_PONG,
+            payload: vec![],
+        };
+        assert!(!pong.is_ping());
+        assert!(pong.is_pong());
+
+        let data = Frame {
+            nonce: [0u8; 24],
+            seq: 0,
+            flags: FLAG_DATA,
+            payload: vec![],
+        };
+        assert!(!data.is_ping());
+        assert!(!data.is_pong());
     }
 }

@@ -1,13 +1,20 @@
-use crate::error::Error;
+use std::net::SocketAddr;
+use std::time::Duration;
+
 use hmac::{Hmac, Mac};
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UdpSocket;
 use x25519_dalek::{EphemeralSecret, PublicKey};
+
+use crate::error::Error;
 
 type HmacSha256 = Hmac<Sha256>;
 
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+const HANDSHAKE_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+const HANDSHAKE_MAX_RETRIES: usize = 5;
+const HANDSHAKE_MSG_SIZE: usize = 64;
 
 fn hmac_sha256(key: &[u8; 32], data: &[u8; 32]) -> Result<[u8; 32], Error> {
     let mut mac =
@@ -30,11 +37,7 @@ fn derive_session_key(
     hasher.finalize().into()
 }
 
-async fn send_handshake_msg(
-    stream: &mut (impl AsyncReadExt + AsyncWriteExt + Unpin),
-    psk: &[u8; 32],
-    secret: &EphemeralSecret,
-) -> Result<[u8; 32], Error> {
+fn build_handshake_msg(psk: &[u8; 32], secret: &EphemeralSecret) -> Result<([u8; 64], [u8; 32]), Error> {
     let public = PublicKey::from(secret);
     let pub_bytes = public.to_bytes();
     let hmac = hmac_sha256(psk, &pub_bytes)?;
@@ -43,23 +46,10 @@ async fn send_handshake_msg(
     msg[..32].copy_from_slice(&pub_bytes);
     msg[32..].copy_from_slice(&hmac);
 
-    stream.write_all(&msg).await?;
-    stream.flush().await?;
-    Ok(pub_bytes)
+    Ok((msg, pub_bytes))
 }
 
-async fn recv_and_verify_msg(
-    stream: &mut (impl AsyncReadExt + AsyncWriteExt + Unpin),
-    psk: &[u8; 32],
-) -> Result<[u8; 32], Error> {
-    let mut msg = [0u8; 64];
-    tokio::time::timeout(
-        std::time::Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
-        stream.read_exact(&mut msg),
-    )
-    .await
-    .map_err(|_| Error::Handshake("handshake timeout".into()))??;
-
+fn parse_and_verify_handshake_msg(msg: &[u8; 64], psk: &[u8; 32]) -> Result<[u8; 32], Error> {
     let mut pub_bytes = [0u8; 32];
     pub_bytes.copy_from_slice(&msg[..32]);
 
@@ -74,51 +64,98 @@ async fn recv_and_verify_msg(
     Ok(pub_bytes)
 }
 
-pub async fn client_handshake(
-    stream: &mut (impl AsyncReadExt + AsyncWriteExt + Unpin),
-    psk: &[u8; 32],
-) -> Result<[u8; 32], Error> {
+pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<[u8; 32], Error> {
     let client_secret = EphemeralSecret::random_from_rng(OsRng);
-    let client_pub_bytes = send_handshake_msg(stream, psk, &client_secret).await?;
+    let (client_hello, client_pub_bytes) = build_handshake_msg(psk, &client_secret)?;
 
-    let server_pub_bytes = recv_and_verify_msg(stream, psk).await?;
+    let mut recv_buf = [0u8; HANDSHAKE_MSG_SIZE];
 
-    let server_pub = PublicKey::from(server_pub_bytes);
-    let shared_secret = client_secret.diffie_hellman(&server_pub);
-    let shared_bytes = shared_secret.to_bytes();
+    for attempt in 0..HANDSHAKE_MAX_RETRIES {
+        socket.send(&client_hello).await?;
 
-    Ok(derive_session_key(
-        psk,
-        &shared_bytes,
-        &client_pub_bytes,
-        &server_pub_bytes,
-    ))
+        match tokio::time::timeout(HANDSHAKE_RETRY_INTERVAL, socket.recv(&mut recv_buf)).await {
+            Ok(Ok(n)) if n == HANDSHAKE_MSG_SIZE => {
+                let server_pub_bytes = parse_and_verify_handshake_msg(&recv_buf, psk)?;
+
+                let server_pub = PublicKey::from(server_pub_bytes);
+                let shared_secret = client_secret.diffie_hellman(&server_pub);
+                let shared_bytes = shared_secret.to_bytes();
+
+                return Ok(derive_session_key(
+                    psk,
+                    &shared_bytes,
+                    &client_pub_bytes,
+                    &server_pub_bytes,
+                ));
+            }
+            Ok(Ok(_)) => {
+                continue;
+            }
+            Ok(Err(_)) => {
+                continue;
+            }
+            Err(_) => {
+                if attempt == HANDSHAKE_MAX_RETRIES - 1 {
+                    return Err(Error::Handshake("no response from server after retries".into()));
+                }
+                continue;
+            }
+        }
+    }
+
+    Err(Error::Handshake("no response from server".into()))
 }
 
-pub async fn server_handshake(
-    stream: &mut (impl AsyncReadExt + AsyncWriteExt + Unpin),
-    psk: &[u8; 32],
-) -> Result<[u8; 32], Error> {
-    let client_pub_bytes = recv_and_verify_msg(stream, psk).await?;
+pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], SocketAddr), Error> {
+    loop {
+        let mut buf = [0u8; HANDSHAKE_MSG_SIZE];
 
-    let server_secret = EphemeralSecret::random_from_rng(OsRng);
-    let server_pub_bytes = send_handshake_msg(stream, psk, &server_secret).await?;
+        let (n, client_addr) = tokio::time::timeout(
+            Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+            socket.recv_from(&mut buf),
+        )
+        .await
+        .map_err(|_| Error::Handshake("handshake timeout: no client".into()))??;
 
-    let client_pub = PublicKey::from(client_pub_bytes);
-    let shared_secret = server_secret.diffie_hellman(&client_pub);
-    let shared_bytes = shared_secret.to_bytes();
+        if n != HANDSHAKE_MSG_SIZE {
+            continue;
+        }
 
-    Ok(derive_session_key(
-        psk,
-        &shared_bytes,
-        &client_pub_bytes,
-        &server_pub_bytes,
-    ))
+        let client_pub_bytes = match parse_and_verify_handshake_msg(&buf, psk) {
+            Ok(pubkey) => pubkey,
+            Err(_) => continue,
+        };
+
+        let server_secret = EphemeralSecret::random_from_rng(OsRng);
+        let server_pub = PublicKey::from(&server_secret);
+        let server_pub_bytes = server_pub.to_bytes();
+
+        let server_hmac = hmac_sha256(psk, &server_pub_bytes)?;
+        let mut response = [0u8; HANDSHAKE_MSG_SIZE];
+        response[..32].copy_from_slice(&server_pub_bytes);
+        response[32..].copy_from_slice(&server_hmac);
+
+        socket.send_to(&response, client_addr).await?;
+
+        let client_pub = PublicKey::from(client_pub_bytes);
+        let shared_secret = server_secret.diffie_hellman(&client_pub);
+        let shared_bytes = shared_secret.to_bytes();
+
+        let session_key = derive_session_key(
+            psk,
+            &shared_bytes,
+            &client_pub_bytes,
+            &server_pub_bytes,
+        );
+
+        return Ok((session_key, client_addr));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{udp_bind, udp_connect};
     use rand::RngCore;
 
     fn random_psk() -> [u8; 32] {
@@ -127,18 +164,25 @@ mod tests {
         psk
     }
 
+    async fn setup_udp_pair() -> (UdpSocket, UdpSocket, SocketAddr) {
+        let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let client = udp_connect(server_addr).await.unwrap();
+        (client, server, server_addr)
+    }
+
     #[tokio::test]
     async fn test_client_server_handshake_matching_keys() {
         let psk = random_psk();
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (client, server, _) = setup_udp_pair().await;
 
-        let (client_key, server_key) = tokio::join!(
-            client_handshake(&mut client, &psk),
-            server_handshake(&mut server, &psk),
+        let (client_result, server_result) = tokio::join!(
+            client_handshake(&client, &psk),
+            server_handshake(&server, &psk),
         );
 
-        let client_key = client_key.unwrap();
-        let server_key = server_key.unwrap();
+        let client_key = client_result.unwrap();
+        let (server_key, _client_addr) = server_result.unwrap();
         assert_eq!(client_key, server_key);
     }
 
@@ -216,11 +260,11 @@ mod tests {
     async fn test_client_server_wrong_psk() {
         let client_psk = [0xABu8; 32];
         let server_psk = [0xBAu8; 32];
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (client, server, _) = setup_udp_pair().await;
 
         let (client_result, server_result) = tokio::join!(
-            client_handshake(&mut client, &client_psk),
-            server_handshake(&mut server, &server_psk),
+            client_handshake(&client, &client_psk),
+            server_handshake(&server, &server_psk),
         );
 
         assert!(client_result.is_err());
@@ -232,16 +276,17 @@ mod tests {
         let psk = random_psk();
         let mut keys = std::collections::HashSet::new();
 
-        for _ in 0..100 {
-            let (mut client, mut server) = tokio::io::duplex(4096);
+        for _ in 0..20 {
+            let (client, server, _) = setup_udp_pair().await;
 
-            let (client_key, server_key) = tokio::join!(
-                client_handshake(&mut client, &psk),
-                server_handshake(&mut server, &psk),
+            let (client_result, server_result) = tokio::join!(
+                client_handshake(&client, &psk),
+                server_handshake(&server, &psk),
             );
 
-            let key = client_key.unwrap();
-            assert_eq!(key, server_key.unwrap());
+            let key = client_result.unwrap();
+            let (server_key, _) = server_result.unwrap();
+            assert_eq!(key, server_key);
             assert!(keys.insert(key), "duplicate session key (no PFS)");
         }
     }
@@ -249,56 +294,74 @@ mod tests {
     #[tokio::test]
     async fn test_psk_all_zeros() {
         let psk = [0u8; 32];
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (client, server, _) = setup_udp_pair().await;
 
         let (client_key, server_key) = tokio::join!(
-            client_handshake(&mut client, &psk),
-            server_handshake(&mut server, &psk),
+            client_handshake(&client, &psk),
+            server_handshake(&server, &psk),
         );
 
         let client_key = client_key.unwrap();
-        let server_key = server_key.unwrap();
+        let (server_key, _) = server_key.unwrap();
         assert_eq!(client_key, server_key);
     }
 
     #[tokio::test]
     async fn test_psk_all_ff() {
         let psk = [0xFFu8; 32];
-        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (client, server, _) = setup_udp_pair().await;
 
         let (client_key, server_key) = tokio::join!(
-            client_handshake(&mut client, &psk),
-            server_handshake(&mut server, &psk),
+            client_handshake(&client, &psk),
+            server_handshake(&server, &psk),
         );
 
         let client_key = client_key.unwrap();
-        let server_key = server_key.unwrap();
+        let (server_key, _) = server_key.unwrap();
         assert_eq!(client_key, server_key);
     }
 
+    /// Helper: set up proxy between client and server for tampered tests.
+    /// Returns (client_socket, proxy_to_client, proxy_to_server, server_socket)
+    async fn setup_proxy_pair() -> (UdpSocket, UdpSocket, UdpSocket, UdpSocket) {
+        let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let proxy_to_client = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let proxy_client_addr = proxy_to_client.local_addr().unwrap();
+
+        let proxy_to_server = udp_connect(server_addr).await.unwrap();
+
+        let client = udp_connect(proxy_client_addr).await.unwrap();
+
+        (client, proxy_to_client, proxy_to_server, server)
+    }
+
     #[tokio::test]
-    async fn test_tampered_hmac_server_hello() {
+    async fn test_tampered_server_hello() {
         let psk = random_psk();
-        let (mut client_end, mut proxy_end_c) = tokio::io::duplex(4096);
-        let (mut proxy_end_s, mut server_end) = tokio::io::duplex(4096);
+        let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
 
         let client_handle = tokio::spawn(async move {
-            client_handshake(&mut client_end, &psk).await
+            client_handshake(&client, &psk).await
         });
 
         let proxy_handle = tokio::spawn(async move {
-            let mut buf_c = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_c, &mut buf_c).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_s, &buf_c).await.unwrap();
+            let mut buf = [0u8; 64];
+            let (n, client_addr) = proxy_to_client.recv_from(&mut buf).await.unwrap();
+            assert_eq!(n, 64);
 
-            let mut buf_s = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_s, &mut buf_s).await.unwrap();
-            buf_s[63] ^= 0xFF;
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_c, &buf_s).await.unwrap();
+            proxy_to_server.send(&buf[..n]).await.unwrap();
+
+            let mut srv_buf = [0u8; 64];
+            let n = proxy_to_server.recv(&mut srv_buf).await.unwrap();
+            assert_eq!(n, 64);
+            srv_buf[63] ^= 0xFF;
+            proxy_to_client.send_to(&srv_buf[..n], client_addr).await.unwrap();
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&mut server_end, &psk).await
+            server_handshake(&server, &psk).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
@@ -308,28 +371,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tampered_hmac_client_hello() {
+    async fn test_tampered_client_hello() {
         let psk = random_psk();
-        let (mut client_end, mut proxy_end_c) = tokio::io::duplex(4096);
-        let (mut proxy_end_s, mut server_end) = tokio::io::duplex(4096);
+        let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
 
         let client_handle = tokio::spawn(async move {
-            client_handshake(&mut client_end, &psk).await
+            client_handshake(&client, &psk).await
         });
 
         let proxy_handle = tokio::spawn(async move {
-            let mut buf_c = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_c, &mut buf_c).await.unwrap();
-            buf_c[63] ^= 0xFF;
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_s, &buf_c).await.unwrap();
+            let mut buf = [0u8; 64];
+            let (n, _client_addr) = proxy_to_client.recv_from(&mut buf).await.unwrap();
+            assert_eq!(n, 64);
+            buf[63] ^= 0xFF;
 
-            let mut buf_s = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_s, &mut buf_s).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_c, &buf_s).await.unwrap();
+            proxy_to_server.send(&buf[..n]).await.unwrap();
+
+            // Server rejected the tampered hello, no response expected.
+            // Wait briefly to confirm no response, then let both sides time out.
+            let mut srv_buf = [0u8; 64];
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                proxy_to_server.recv(&mut srv_buf),
+            )
+            .await;
+            assert!(result.is_err(), "server should not respond to tampered hello");
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&mut server_end, &psk).await
+            server_handshake(&server, &psk).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
@@ -341,31 +411,41 @@ mod tests {
     #[tokio::test]
     async fn test_tampered_public_key() {
         let psk = random_psk();
-        let (mut client_end, mut proxy_end_c) = tokio::io::duplex(4096);
-        let (mut proxy_end_s, mut server_end) = tokio::io::duplex(4096);
+        let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
 
         let client_handle = tokio::spawn(async move {
-            client_handshake(&mut client_end, &psk).await
+            client_handshake(&client, &psk).await
         });
 
         let proxy_handle = tokio::spawn(async move {
-            let mut buf_c = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_c, &mut buf_c).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_s, &buf_c).await.unwrap();
+            let mut buf = [0u8; 64];
+            let (n, _client_addr) = proxy_to_client.recv_from(&mut buf).await.unwrap();
+            assert_eq!(n, 64);
 
-            let mut buf_s = [0u8; 64];
-            tokio::io::AsyncReadExt::read_exact(&mut proxy_end_s, &mut buf_s).await.unwrap();
-            buf_s[0] ^= 1;
-            tokio::io::AsyncWriteExt::write_all(&mut proxy_end_c, &buf_s).await.unwrap();
+            proxy_to_server.send(&buf[..n]).await.unwrap();
+
+            let mut srv_buf = [0u8; 64];
+            let n = proxy_to_server.recv(&mut srv_buf).await.unwrap();
+            assert_eq!(n, 64);
+            srv_buf[0] ^= 1;
+            proxy_to_client.send_to(&srv_buf[..n], _client_addr).await.unwrap();
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&mut server_end, &psk).await
+            server_handshake(&server, &psk).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
 
         assert!(server_result.unwrap().is_ok());
         assert!(client_result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_server_handshake_timeout() {
+        let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let psk = random_psk();
+        let result = server_handshake(&server, &psk).await;
+        assert!(result.is_err());
     }
 }

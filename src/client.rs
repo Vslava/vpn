@@ -2,8 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use crate::crypto::Crypto;
@@ -14,18 +13,16 @@ use crate::tun::TunDevice;
 #[allow(clippy::too_many_arguments)]
 pub async fn run_client(
     tun: Arc<TunDevice>,
-    stream: TcpStream,
+    socket: UdpSocket,
     crypto: Arc<Crypto>,
     cancel: CancellationToken,
     heartbeat_interval: Option<u64>,
     heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
-    crate::transport::set_keepalive(&stream)?;
-
     let hb_interval = std::time::Duration::from_secs(heartbeat_interval.unwrap_or(30));
     let hb_timeout = std::time::Duration::from_secs(heartbeat_timeout.unwrap_or(60));
 
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let socket = Arc::new(socket);
     let seq = Arc::new(AtomicU32::new(0));
 
     // Channel: heartbeat → h1 (PING frames to send)
@@ -37,10 +34,11 @@ pub async fn run_client(
     // Shared: last time a frame was received from server
     let last_rx = Arc::new(std::sync::Mutex::new(Instant::now()));
 
-    // ── h1: TUN → TCP (data frames) + channel → TCP (PING frames) ──
+    // ── h1: TUN → UDP (data frames) + channel → UDP (PING frames) ──
     let tun_tx = tun.clone();
     let crypto_tx = crypto.clone();
     let seq_tx = seq.clone();
+    let socket_h1 = socket.clone();
     let mut h1 = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -63,32 +61,29 @@ pub async fn run_client(
                     };
 
                     let encoded = protocol::encode(&frame);
-                    writer.write_all(&encoded).await.map_err(Error::Io)?;
+                    socket_h1.send(&encoded).await.map_err(Error::Io)?;
                     Ok::<_, Error>(())
                 } => {
                     result?;
                 }
                 Some(ping) = ping_rx.recv() => {
-                    writer.write_all(&ping).await.map_err(Error::Io)?;
+                    socket_h1.send(&ping).await.map_err(Error::Io)?;
                 }
             }
         }
     });
 
-    // ── h2: TCP → TUN (handle PONG) ──
+    // ── h2: UDP → TUN (handle PONG) ──
     let crypto_rx = crypto.clone();
     let last_rx_h2 = last_rx.clone();
+    let socket_h2 = socket.clone();
     let mut h2 = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
+
         loop {
-            let mut len_buf = [0u8; 2];
-            reader.read_exact(&mut len_buf).await.map_err(Error::Io)?;
-            let frame_len = u16::from_be_bytes(len_buf) as usize;
+            let n = socket_h2.recv(&mut buf).await.map_err(Error::Io)?;
 
-            let mut frame_data = vec![0u8; 2 + frame_len];
-            frame_data[..2].copy_from_slice(&len_buf);
-            reader.read_exact(&mut frame_data[2..]).await.map_err(Error::Io)?;
-
-            let frame = protocol::decode(&frame_data)?;
+            let frame = protocol::decode(&buf[..n])?;
 
             if frame.is_pong() {
                 *last_rx_h2.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
@@ -227,10 +222,10 @@ async fn run_client_session(
     heartbeat_interval: Option<u64>,
     heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
-    let mut stream = tokio::select! {
+    let socket = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(()),
-        result = crate::transport::connect(remote) => result.map_err(Error::Io)?,
+        result = crate::transport::udp_connect(remote) => result?,
     };
     tracing::info!(remote = %remote, "Connected");
 
@@ -239,7 +234,7 @@ async fn run_client_session(
         _ = cancel.cancelled() => return Ok(()),
         result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
-            crate::handshake::client_handshake(&mut stream, psk),
+            crate::handshake::client_handshake(&socket, psk),
         ) => match result {
             Ok(Ok(k)) => k,
             Ok(Err(e)) => return Err(e),
@@ -249,7 +244,7 @@ async fn run_client_session(
     tracing::info!("Handshake complete, resuming");
 
     let crypto = Arc::new(Crypto::new(&session_key));
-    run_client(tun, stream, crypto, cancel, heartbeat_interval, heartbeat_timeout).await
+    run_client(tun, socket, crypto, cancel, heartbeat_interval, heartbeat_timeout).await
 }
 
 fn reconnect_backoff(attempt: u32, max_delay_secs: u64) -> u64 {
@@ -296,7 +291,15 @@ pub async fn run_client_full(
 
     let mut attempt = 0u32;
     loop {
-        let result = run_client_session(remote, psk, tun.clone(), cancel.clone(), heartbeat_interval, heartbeat_timeout).await;
+        let result = run_client_session(
+            remote,
+            psk,
+            tun.clone(),
+            cancel.clone(),
+            heartbeat_interval,
+            heartbeat_timeout,
+        )
+        .await;
 
         match result {
             Ok(()) => break,

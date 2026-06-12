@@ -15,6 +15,7 @@ async fn test_save_default_route() {
 }
 
 #[tokio::test]
+#[ignore = "requires root (sudo) for TUN and route management"]
 async fn test_tun_route_roundtrip() {
     let orig = traffic_sentinel::route::save_default_route()
         .await

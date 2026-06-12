@@ -1,129 +1,97 @@
 use std::io;
 use std::net::SocketAddr;
-use std::time::Duration;
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UdpSocket;
 
-pub async fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
-    let stream = TcpStream::connect(addr).await?;
-    stream.set_nodelay(true)?;
-    Ok(stream)
+pub async fn udp_bind(addr: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = UdpSocket::bind(addr).await?;
+    Ok(socket)
 }
 
-pub async fn listen(addr: SocketAddr) -> io::Result<TcpListener> {
-    TcpListener::bind(addr).await
-}
-
-pub async fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 2];
-    stream.read_exact(&mut len_buf).await?;
-    let frame_len = u16::from_be_bytes(len_buf) as usize;
-
-    let mut buf = vec![0u8; 2 + frame_len];
-    buf[..2].copy_from_slice(&len_buf);
-    stream.read_exact(&mut buf[2..]).await?;
-
-    Ok(buf)
-}
-
-pub async fn write_frame(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
-    stream.write_all(data).await
-}
-
-pub fn set_keepalive(stream: &TcpStream) -> io::Result<()> {
-    use socket2::{SockRef, TcpKeepalive};
-    let s = SockRef::from(stream);
-    let params = TcpKeepalive::new().with_time(Duration::from_secs(60));
-    s.set_tcp_keepalive(&params)?;
-    Ok(())
+pub async fn udp_connect(addr: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    socket.connect(addr).await?;
+    Ok(socket)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::net::TcpListener as TokioListener;
 
-    async fn setup_pair() -> (TcpStream, TcpStream) {
-        let listener = TokioListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let client = connect(addr).await.unwrap();
-        let (server, _) = listener.accept().await.unwrap();
-
-        (client, server)
+    async fn setup_pair() -> (UdpSocket, UdpSocket, SocketAddr) {
+        let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let client = udp_connect(server_addr).await.unwrap();
+        (client, server, server_addr)
     }
 
     #[tokio::test]
-    async fn test_connect_listen() {
-        let (_client, _server) = setup_pair().await;
+    async fn test_udp_bind() {
+        let socket = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        assert!(socket.local_addr().is_ok());
     }
 
     #[tokio::test]
-    async fn test_write_read_frame() {
-        let (mut client, mut server) = setup_pair().await;
-        let payload_len = 1000u16;
-        let mut frame = Vec::with_capacity(2 + payload_len as usize);
-        frame.extend_from_slice(&payload_len.to_be_bytes());
-        frame.resize(2 + payload_len as usize, 0xAB);
-
-        write_frame(&mut server, &frame).await.unwrap();
-        let received = read_frame(&mut client).await.unwrap();
-
-        assert_eq!(frame, received);
+    async fn test_udp_connect() {
+        let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let client = udp_connect(server_addr).await.unwrap();
+        assert!(client.local_addr().is_ok());
     }
 
     #[tokio::test]
-    async fn test_frame_boundaries() {
-        let (mut client, mut server) = setup_pair().await;
+    async fn test_send_recv() {
+        let (client, server, _server_addr) = setup_pair().await;
 
-        let len1 = 24 + 4 + 1 + 100;
-        let len2 = 24 + 4 + 1 + 200;
-
-        let mut frame1 = vec![0u8; 2 + len1];
-        frame1[..2].copy_from_slice(&(len1 as u16).to_be_bytes());
-        frame1[2..].fill(0x01);
-
-        let mut frame2 = vec![0u8; 2 + len2];
-        frame2[..2].copy_from_slice(&(len2 as u16).to_be_bytes());
-        frame2[2..].fill(0x02);
-
-        write_frame(&mut server, &frame1).await.unwrap();
-        write_frame(&mut server, &frame2).await.unwrap();
-
-        let received1 = read_frame(&mut client).await.unwrap();
-        let received2 = read_frame(&mut client).await.unwrap();
-
-        assert_eq!(frame1, received1);
-        assert_eq!(frame2, received2);
+        client.send(b"hello").await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = server.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"hello");
     }
 
     #[tokio::test]
-    async fn test_nodelay() {
-        let (client, _server) = setup_pair().await;
-        assert!(client.nodelay().unwrap());
+    async fn test_recv_from_returns_peer() {
+        let (client, server, _server_addr) = setup_pair().await;
+
+        client.send(b"ping").await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, peer) = server.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        assert!(peer.port() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_bidirectional() {
+        let (client, server, _server_addr) = setup_pair().await;
+
+        client.send(b"from client").await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, client_addr) = server.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"from client");
+
+        server.send_to(b"from server", client_addr).await.unwrap();
+        let mut rbuf = [0u8; 16];
+        let n = client.recv(&mut rbuf).await.unwrap();
+        assert_eq!(&rbuf[..n], b"from server");
+    }
+
+    #[tokio::test]
+    async fn test_large_datagram() {
+        let (client, server, _server_addr) = setup_pair().await;
+
+        let payload = vec![0xABu8; 1400];
+        client.send(&payload).await.unwrap();
+        let mut buf = vec![0u8; 2000];
+        let (n, _) = server.recv_from(&mut buf).await.unwrap();
+        assert_eq!(n, 1400);
+        assert_eq!(&buf[..n], &payload[..]);
     }
 
     #[tokio::test]
     async fn test_connection_refused() {
-        let result = connect("127.0.0.1:1".parse().unwrap()).await;
-        assert!(result.is_err());
+        let result = udp_connect("127.0.0.1:1".parse().unwrap()).await;
+        assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_large_burst() {
-        let (mut client, mut server) = setup_pair().await;
 
-        for i in 0..100 {
-            let len = 24 + 4 + 1 + 65506;
-            let mut frame = vec![0u8; 2 + len];
-            frame[..2].copy_from_slice(&(len as u16).to_be_bytes());
-            frame[2] = i;
-
-            write_frame(&mut server, &frame).await.unwrap();
-            let received = read_frame(&mut client).await.unwrap();
-            assert_eq!(received[..2], (len as u16).to_be_bytes());
-            assert_eq!(received[2], i);
-        }
-    }
 }
