@@ -147,7 +147,17 @@ pub async fn handle_client(
                     continue;
                 }
 
-                let plaintext = crypto.decrypt(&frame.nonce, &frame.payload)?;
+                let plaintext = match crypto.decrypt(&frame.nonce, &frame.payload) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        if n == 64 {
+                            tracing::debug!("64-byte failed decrypt — possible new client handshake, ending session");
+                            return Ok(());
+                        }
+                        tracing::debug!("Decryption failed: {e}");
+                        continue;
+                    }
+                };
                 tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
                 tun.send(&plaintext).await.map_err(Error::Io)?;
             }

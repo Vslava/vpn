@@ -24,21 +24,42 @@ async fn test_server_forwarding_pipeline() {
         .expect("create TUN failed (requires sudo)");
     let tun = Arc::new(tun);
 
-    let server_socket = Arc::new(
-        traffic_sentinel::transport::udp_bind(
-            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        )
-        .await
-        .expect("bind failed"),
-    );
+    let server_socket = traffic_sentinel::transport::udp_bind(
+        "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+    )
+    .await
+    .expect("bind failed");
     let addr = server_socket.local_addr().unwrap();
 
-    // Run server handshake
-    let (session_key, client_addr) =
-        traffic_sentinel::handshake::server_handshake(&server_socket, &psk)
+    let (hs_tx, hs_rx) =
+        tokio::sync::oneshot::channel::<Result<([u8; 32], std::net::SocketAddr), traffic_sentinel::error::Error>>();
+
+    // Spawn server handshake (it waits for client)
+    let server_hs = tokio::spawn(async move {
+        let result =
+            traffic_sentinel::handshake::server_handshake(&server_socket, &psk).await;
+        hs_tx.send(result).ok();
+        server_socket
+    });
+
+    // Client connects via UDP and does handshake
+    let client = traffic_sentinel::transport::udp_connect(addr)
+        .await
+        .expect("client connect failed");
+    let client_key =
+        traffic_sentinel::handshake::client_handshake(&client, &psk)
             .await
-            .expect("server handshake failed");
+            .expect("client handshake failed");
+    eprintln!("client: handshake complete");
+
+    // Get server handshake result
+    let hs_result = hs_rx.await.expect("handshake channel dropped");
+    let (session_key, client_addr) = hs_result.expect("server handshake failed");
     eprintln!("server: handshake complete with {}", client_addr);
+    assert_eq!(client_key, session_key);
+
+    let server_socket = server_hs.await.expect("server hs task");
+    let server_socket = Arc::new(server_socket);
 
     let crypto = Arc::new(Crypto::new(&session_key));
     let seq = Arc::new(AtomicU32::new(0));
@@ -57,17 +78,6 @@ async fn test_server_forwarding_pipeline() {
         )
         .await
     });
-
-    // Client connects via UDP and does handshake
-    let client = traffic_sentinel::transport::udp_connect(addr)
-        .await
-        .expect("client connect failed");
-    let client_key =
-        traffic_sentinel::handshake::client_handshake(&client, &psk)
-            .await
-            .expect("client handshake failed");
-    assert_eq!(client_key, session_key);
-    eprintln!("client: handshake complete");
 
     let client_crypto = Crypto::new(&client_key);
     let nonce = Crypto::generate_nonce();

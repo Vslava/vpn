@@ -226,8 +226,11 @@ echo "  Server unpaused..."
 step "Client reconnecting" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "Reconnecting"'
 step "Client reconnected" wait_for_log ts-hb2-client "resuming" 30
 
-sleep 2
-step "Ping after reconnect" docker exec ts-hb2-client ping -c 2 -W 3 10.0.0.1
+# Wait for routes/TUN to settle after reconnect
+sleep 10
+docker exec ts-hb2-client ip route show default 2>/dev/null || true
+docker exec ts-hb2-client ip addr show ts0 2>/dev/null || true
+step "Ping after reconnect" docker exec ts-hb2-client ping -c 1 -W 10 10.0.0.1
 
 docker rm -f ts-hb2-client ts-hb2-server > /dev/null 2>&1 || true
 

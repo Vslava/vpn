@@ -90,7 +90,13 @@ pub async fn run_client(
                 continue;
             }
 
-            let plaintext = crypto_rx.decrypt(&frame.nonce, &frame.payload)?;
+            let plaintext = match crypto_rx.decrypt(&frame.nonce, &frame.payload) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!("Decryption failed (stale frame?): {e}");
+                    continue;
+                }
+            };
             tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
             tun.send(&plaintext).await.map_err(Error::Io)?;
             *last_rx_h2.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
