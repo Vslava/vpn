@@ -1,5 +1,7 @@
 # Implementation Plan: traffic-sentinel
 
+> **Note**: P0–P2 реализованы на TCP-транспорте. P3 (текущая фаза) переводит транспорт на UDP для устранения TCP-over-TCP meltdown. Ниже — оригинальный план (P0–P2) и новый план (P3). После P3 project structure и key interfaces будут обновлены под UDP.
+
 ## 1. Project Structure
 
 ```
@@ -247,7 +249,84 @@ rtnetlink = "0.14"                        # netlink for route management
 
 ---
 
-## 6. Platform-Specific Notes
+---
+
+## 6. Phase P3 — UDP Transport (Hardening)
+
+**Goal**: Replace TCP transport with UDP to eliminate TCP-over-TCP meltdown. Performance-critical streaming (video) currently degrades because two TCP layers (inner application TCP + outer tunnel TCP) both handle retransmission, causing cascading congestion window collapse. UDP transport leaves reliability to inner TCP alone.
+
+### Step P3.1: Protocol — remove length prefix
+
+UDP datagrams are self-framing — no need for a 2-byte length prefix.
+
+- **`src/protocol.rs`**:
+  - `encode()` produces `[nonce:24][seq:4][flags:1][payload]` (no length prefix)
+  - `decode()` parses the same format
+  - Update all tests
+
+### Step P3.2: Transport — UDP sockets
+
+- **`src/transport.rs`**:
+  - Remove `TcpListener`/`TcpStream`/`read_frame`/`write_frame`/`set_keepalive`
+  - Add:
+    - `udp_bind(addr: SocketAddr) -> Result<UdpSocket>` — bind + set SO_RCVBUF/SO_SNDBUF (2MB)
+    - `udp_connect(addr: SocketAddr) -> Result<UdpSocket>` — ephemeral bind + connect to remote
+  - No keepalive needed (application-level heartbeat already exists)
+
+### Step P3.3: Handshake over UDP
+
+- **`src/handshake.rs`**:
+  - Replace `AsyncReadExt + AsyncWriteExt` (TCP stream) with `UdpSocket`
+  - `client_handshake(socket: &UdpSocket, psk) -> Result<[u8; 32]>`:
+    1. Send 64-byte client_hello (pubkey + HMAC)
+    2. Wait for 64-byte response with 3s timeout
+    3. On timeout → retransmit (up to 5 retries)
+    4. Verify server HMAC, derive session key
+  - `server_handshake(socket: &UdpSocket, psk) -> Result<([u8; 32], SocketAddr)>`:
+    1. Wait for 64-byte datagram from any source
+    2. Verify client HMAC
+    3. Send 64-byte server_hello
+    4. Return session key + client address
+  - Update all tests (use real UDP sockets instead of `tokio::io::duplex`)
+
+### Step P3.4: Server — UDP data loop
+
+- **`src/server.rs`**:
+  - Bind UDP instead of TCP listener
+  - Call `server_handshake()` → get client address + session key
+  - Data loop with UDP `recv_from` / `send_to`:
+    - **h1**: UDP → TUN — `recv_from()` → filter by client_addr → decode → decrypt → handle PING → `tun.send()`
+    - **h2**: TUN → UDP + PONG channel — `tun.recv()` → encrypt → encode → `send_to(client_addr)`
+  - Drop datagrams from unknown sources during active session
+  - Server-side timeout: if no data from client for 120s → back to handshake wait
+
+### Step P3.5: Client — UDP data loop
+
+- **`src/client.rs`**:
+  - Use `udp_connect()` instead of TCP connect
+  - Data loop with UDP `send` / `recv` (connected socket):
+    - **h1**: TUN → UDP — `tun.recv()` → encrypt → encode → `socket.send()`
+    - **h2**: UDP → TUN — `socket.recv()` → decode → decrypt → handle PONG → `tun.send()`
+  - Heartbeat: PING/PONG over UDP (unchanged)
+  - Timeout watchdog: unchanged
+
+### Step P3.6: Update Docker test scripts
+
+- `tests/docker_e2e.sh`, `tests/docker_heartbeat.sh`, `tests/docker_reconnect.sh`:
+  - No TCP-specific setup needed (no `iptables -A OUTPUT -p tcp --dport 8443 -j DROP` etc.)
+  - Test scripts remain largely the same (they test app behavior, not transport protocol)
+
+### P3 Artifacts
+
+- TCP-over-TCP meltdown eliminated
+- Throughput for video streaming restored (tested via Docker e2e)
+- All existing tests pass (updated for UDP)
+- Handshake retransmission works (client retries on packet loss)
+- No new dependencies
+
+---
+
+## 7. Platform-Specific Notes
 
 ### Linux (v1)
 
@@ -320,11 +399,17 @@ pub async fn set_tun_route(tun_gw: Ipv4Addr) -> Result<()>;
 pub async fn add_exclude_route(server_ip: Ipv4Addr) -> Result<()>;
 pub async fn restore_route(route: DefaultRoute) -> Result<()>;
 
-// transport.rs
-pub async fn connect(addr: SocketAddr) -> Result<TcpStream>;
-pub async fn listen(addr: SocketAddr) -> Result<TcpListener>;
-pub async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>>;
-pub async fn write_frame(stream: &mut TcpStream, data: &[u8]) -> Result<()>;
+// transport.rs (P0–P2: TCP; P3: UDP)
+pub async fn udp_bind(addr: SocketAddr) -> Result<UdpSocket>;
+pub async fn udp_connect(addr: SocketAddr) -> Result<UdpSocket>;
+
+// handshake.rs (P3: UDP)
+pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<[u8; 32]>;
+pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], SocketAddr)>;
+
+// protocol.rs (P3: no length prefix)
+pub fn encode(frame: &Frame) -> Vec<u8>;       // [nonce:24][seq:4][flags:1][payload]
+pub fn decode(data: &[u8]) -> Result<Frame>;   // no length prefix
 ```
 
 ---
@@ -337,11 +422,14 @@ P0.1  ─→ P0.2 ─→ P0.3 ─→ P0.4 ─→ P0.5 ─→ P0.6 ─→ P0.7 �
 P1.1 ────────────────────────────────→ P1.2 ─→ P1.3 ─→ P1.4 ─→ P1.5
                                               ↓
 P2.1 ─→ P2.2 ─→ P2.3 ─→ P2.4 ─→ P2.5 ─→ P2.6
+                                              ↓
+P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6
 ```
 
 - P0 steps are sequential (each builds on the previous)
 - P1.1 (route) and P1.2 (handshake) can be developed in parallel
 - P2 steps are mostly independent
+- P3 steps must be sequential (each file depends on previous changes)
 
 ---
 
@@ -365,3 +453,13 @@ P2.1 ─→ P2.2 ─→ P2.3 ─→ P2.4 ─→ P2.5 ─→ P2.6
 - [ ] TCP disconnect → reconnect within 30s
 - [ ] All errors logged with context
 - [ ] `cargo test --all` passes
+
+### P3
+- [ ] Transport переведён с TCP на UDP
+- [ ] encode/decode в protocol.rs не используют length prefix
+- [ ] Handshake работает поверх UDP с retransmission на клиенте
+- [ ] UDP-датаграмма не превышает ~1445 байт (TUN MTU 1400 + overhead 45)
+- [ ] Видео (HTTP/TCP стриминг) работает без деградации скорости
+- [ ] Все существующие тесты проходят (обновлены под UDP)
+- [ ] Docker e2e тесты проходят
+- [ ] `cargo clippy -- -D warnings` — чисто

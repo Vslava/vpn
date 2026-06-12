@@ -42,7 +42,7 @@
 | FR6 | Единый бинарник с двумя режимами: `--mode client` (форвард трафика на сервер) и `--mode server` (приём трафика, форвард в интернет). | P0 |
 | FR7 | Конфигурация через TOML-файл: режим, TUN-IP, MTU, PSK. Сервер: `[server].listen = "ip:port"`. Клиент: `[client].remote = "ip:port"`. | P1 |
 | FR8 | Логирование уровня INFO/DEBUG в stdout/stderr с метками времени. | P1 |
-| FR9 | Поддержка TCP-туннеля как транспорта (клиент → сервер, единое TCP-соединение). | P0 |
+| FR9 | Транспорт туннеля — UDP (датаграммы с encrypted фреймами). Надёжность возлагается на внутренние протоколы (inner TCP), туннель не добавляет второй уровень retransmission. | P3 |
 | FR10 | Keepalive / heartbeat между клиентом и сервером для детекта разрыва TCP-соединения. | P1 |
 | FR11 | Все инкапсулированные пакеты шифруются потоковым шифром XChaCha20-Poly1305 (каждый пакет — отдельный AEAD nonce). | P0 |
 | FR12 | Ключ шифрования — Pre-Shared Key (PSK) из конфига (hex/base64), 256 бит. | P0 |
@@ -71,7 +71,7 @@
 |    |             |       |  [encrypted]     |       |                  |
 |    v             |       |  (XChaCha20-     |       |                  |
 | [TUN interface]  |       |   Poly1305)      |       |                  |
-|    | (raw IP)    |       |  over TCP        |       |                  |
+|    | (raw IP)    |       |  over UDP        |       |                  |
 |    v             |       |                  |       |                  |
 | [Traffic         | ====> | ==============> | ====> | [Decrypt → Decap |
 |  Sentinel]       |       |                  |       |  → Forward]     |
@@ -89,7 +89,7 @@
 2. **Config Loader** — чтение TOML, валидация.
 3. **Key Exchange** — X25519 ECDH поверх PSK, handshake при старте сессии.
 4. **Crypto Engine** — XChaCha20-Poly1305 Encrypt/Decrypt, nonce-счётчик.
-5. **Transport** — TCP-соединение (tokio TcpStream), потоковая запись/чтение инкапсулированных пакетов.
+5. **Transport** — UDP-сокет (tokio UdpSocket), каждый encrypted фрейм — отдельная датаграмма. Handshake поверх UDP с retransmission.
 6. **Packet Protocol** — Encapsulator / Decapsulator (заголовок: длина, seq, flags).
 7. **Signal Handler** — graceful shutdown.
 8. **Logger** — `tracing`, structured.
@@ -107,7 +107,7 @@
 
 | Компонент | Назначение |
 |---|---|
-| TCP Listener | Приём TCP-соединения от клиента, чтение потока инкапсулированных пакетов |
+| UDP Listener | Приём UDP-датаграмм от клиента, деинкапсуляция фреймов |
 | Forwarder | Отправка расшифрованных IP-пакетов в реальный интернет через сырой сокет (IP_HDRINCL) или через TUN-интерфейс сервера |
 | Reverse Writer | Отправка зашифрованных ответных пакетов обратно клиенту |
 
@@ -125,7 +125,7 @@
 - **Язык**: Rust (edition 2024)
 - **Runtime**: tokio (async I/O)
 - **TUN**: `tun-rs` (v2, feature `async`)
-- **Транспорт**: tokio TcpStream (TCP)
+- **Транспорт**: tokio UdpSocket (UDP)
 - **Маршруты**: парсинг `/proc/net/route` + `netlink` (rtnetlink) или вызов `ip route`
 - **Логирование**: `tracing` (structured, async-friendly)
 - **Конфиг**: `toml` + `serde`, секции `[client]` / `[server]` под общим `[tunnel]`
@@ -141,24 +141,24 @@
 3. Создаётся TUN-интерфейс `ts0` с IP `10.0.0.2/30`.
 4. Сохраняется текущий default route.
 5. Устанавливается default route через `10.0.0.1` (TUN-пир).
-6. Клиент открывает TCP-соединение к `server-ip:8443`, выполняет handshake (ECDH + PSK) поверх TCP.
-7. После handshake — поток пакетов: TUN → Reader → Encrypt → Encapsulate → TCP → Server.
+6. Клиент открывает UDP-сокет к `server-ip:8443`, выполняет handshake (ECDH + PSK) поверх UDP с retransmission.
+7. После handshake — поток датаграмм: TUN → Reader → Encrypt → Encapsulate → UDP → Server.
 8. При получении сигнала SIGTERM — восстановление маршрутов, удаление TUN, exit 0.
 
 ### 10.2 Успешный запуск (сервер)
 
 1. Пользователь запускает `traffic-sentinel --mode server --config server.toml`.
 2. Приложение проверяет права (CAP_NET_ADMIN / root).
-3. Сервер открывает TCP- listen на `0.0.0.0:8443`, принимает соединение, выполняет handshake.
-4. После handshake — сервер принимает зашифрованные пакеты, дешифрует, форвардит в интернет.
+3. Сервер открывает UDP-сокет на `0.0.0.0:8443`, ожидает handshake от клиента.
+4. После handshake — сервер принимает зашифрованные датаграммы, дешифрует, форвардит в интернет.
 5. Ответные пакеты из интернета перехватываются (через сырой сокет или TUN сервера), шифруются, отправляются клиенту.
 6. При SIGTERM — закрытие сокетов, exit 0.
 
-### 10.3 Разрыв TCP-соединения
+### 10.3 Разрыв соединения
 
-1. TCP-соединение между клиентом и сервером обрывается (RST / timeout).
-2. Клиент детектит разрыв (ошибка чтения/записи в TcpStream).
-3. Пытается переподключиться (backoff: 1s, 2s, 4s, ... max 30s) с повторным handshake.
+1. Связь между клиентом и сервером теряется (heartbeat timeout / ICMP unreachable).
+2. Клиент детектит разрыв (отсутствие PONG в течение heartbeat_timeout).
+3. Пытается переподключиться (backoff: 1s, 2s, 4s, ... max 30s) с повторным handshake по UDP.
 4. При успешном переподключении — поток возобновляется.
 5. Если reconnect исчерпан — graceful shutdown (восстановление маршрутов, удаление TUN).
 
@@ -176,7 +176,7 @@
 
 | # | Вопрос | Статус |
 |---|---|---|
-| Q1 | ~~**Какой протокол инкапсуляции использовать?**~~ → **Решено**: TCP-туннель (IP-in-TCP). Шифрованный payload передаётся через единое TCP-соединение (клиент → сервер). Сервер дешифрует, форвардит IP-пакеты в интернет. Ответы — по тому же TCP-соединению обратно. **Риск TCP-over-TCP**: при потерях на транспортном TCP двойной retransmit (внутренний TCP пакета пользователя + внешний TCP туннеля) может деградировать пропускную способность. mitigation: отключить Nagle (TCP_NODELAY), использовать большие буферы, мониторить RTT. | **Решено** |
+| Q1 | ~~**Какой протокол инкапсуляции использовать?**~~ → **Решено**: UDP-транспорт (датаграммы). Фрейм (nonce+seq+flags+encrypted payload) отправляется как UDP-датаграмма. TCP-over-TCP meltdown не возникает — inner TCP сам обрабатывает потери. Надёжность для данных внутри туннеля обеспечивается inner TCP. Для handshake поверх UDP — retransmission на стороне клиента (timeout + retry). | **Решено** |
 | Q2 | ~~**Как обрабатывать ICMP?**~~ → **Решено**: пропускаем "as-is" в туннеле (шифруется и передаётся как любой другой IP-пакет). | **Решено** |
 | Q3 | ~~**MTU — как выставлять?**~~ → **Решено**: TUN MTU = 1400 (default, конфигурируется). MSS clamp = 1360 опционально. Overhead: Poly1305 (16) + XChaCha nonce (24) + length prefix (2) + запас ≈ 50. PMTUD через ICMP от TUN. | **Решено** |
 | Q4 | **IPv6 поддержка?** Нужна ли в v1? Значительно усложняет Route Manager (дефолтные маршруты IPv4 + IPv6). | **Предложено отложить** |
@@ -198,4 +198,4 @@
 | **P0 — Proof of Concept** | `--mode client` + `--mode server`. TUN interface + чтение пакетов + XChaCha20 шифрование + TCP. Loopback test: пишем в TUN клиента → читаем на сервере. | 1 неделя |
 | **P1 — Minimal Viable** | Route management (сохранение/восстановление), ECDH handshake, полный шифрованный цикл: клиент↔сервер, TCP через туннель работает. | 2 недели |
 | **P2 — Production Ready** | Graceful shutdown, reconnection, heartbeat, конфиг, логирование, тесты, error handling. | 1 неделя |
-| **P3 — Hardening** | Performance tuning, security review, IPv6 (если решено), CI/CD, пост-квантовая гибридная KEX. | 2 недели |
+| **P3 — Hardening** | UDP transport (fix TCP-over-TCP meltdown), performance tuning, security review, IPv6 (если решено), CI/CD, пост-квантовая гибридная KEX. | 2 недели |

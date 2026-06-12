@@ -2,7 +2,7 @@
 
 ## Статус
 
-P2 (Production Ready) завершён. Текущий этап — multi-client (сервер обслуживает несколько клиентов одновременно).
+P2 (Production Ready) завершён. Текущий этап — P3 (Hardening): перевод транспорта с TCP на UDP для устранения TCP-over-TCP meltdown.
 
 ## Тестирование
 
@@ -26,3 +26,4 @@ bash tests/docker_heartbeat.sh
 - [VERIFICATION_P0](docs/VERIFICATION_P0.md)
 - [VERIFICATION_P1](docs/VERIFICATION_P1.md)
 - [VERIFICATION_P2](docs/VERIFICATION_P2.md)
+- [VERIFICATION_P3](docs/VERIFICATION_P3.md)
