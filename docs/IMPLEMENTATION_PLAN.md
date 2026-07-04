@@ -298,7 +298,7 @@ UDP datagrams are self-framing — no need for a 2-byte length prefix.
     - **h1**: UDP → TUN — `recv_from()` → filter by client_addr → decode → decrypt → handle PING → `tun.send()`
     - **h2**: TUN → UDP + PONG channel — `tun.recv()` → encrypt → encode → `send_to(client_addr)`
   - Drop datagrams from unknown sources during active session
-  - Server-side timeout: if no data from client for 120s → back to handshake wait
+  - Server-side timeout: if no data from client for 180s → back to handshake wait
 
 ### Step P3.5: Client — UDP data loop
 

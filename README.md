@@ -1,17 +1,17 @@
 # Traffic Sentinel
 
-Зашифрованный VPN-туннель на Rust. Перехватывает весь L3-трафик через TUN-интерфейс, шифрует (XChaCha20-Poly1305 + X25519 ECDH + PSK) и отправляет на сервер-шлюз через TCP.
+Зашифрованный VPN-туннель на Rust. Перехватывает весь L3-трафик через TUN-интерфейс, шифрует (XChaCha20-Poly1305 + X25519 ECDH + PSK) и отправляет на сервер-шлюз через UDP.
 
 ## Архитектура
 
 ```
   App (браузер и т.д.)          Internet           Gateway Server
        |                         [encrypted]             |
-  [TUN interface]                TCP tunnel              |
+  [TUN interface]                UDP tunnel              |
        | (raw IP)                                        |
-  [Traffic Sentinel] —————————————— TCP ———————————→ [Decrypt → Forward]
+  [Traffic Sentinel] —————————————— UDP ———————————→ [Decrypt → Forward]
        ↑                                                      |
-       ←———————————————————— TCP —————————————————————— [Encrypt → Send]
+       ←———————————————————— UDP —————————————————————— [Encrypt → Send]
 ```
 
 Единый бинарник, режим выбирается флагом `--mode client|server`.
@@ -57,7 +57,7 @@ remote = "SERVER_IP:8443"
 - Автоматическая настройка NAT (MASQUERADE) на сервере через iptables
 - Graceful shutdown (SIGTERM/SIGINT → восстановление маршрутов, удаление TUN)
 - Reconnect с exponential backoff (клиент)
-- Heartbeat/PING-PONG для детекта разрыва TCP
+- Heartbeat/PING-PONG для детекта разрыва UDP
 - Структурированное логирование (tracing, уровни через `RUST_LOG`)
 - Единый статический бинарник
 
