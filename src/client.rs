@@ -5,6 +5,7 @@ use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::{DEFAULT_CLIENT_TUN_IP, DEFAULT_GATEWAY, DEFAULT_TUN_NETMASK};
 use crate::crypto::Crypto;
 use crate::error::Error;
 use crate::protocol::{self, Frame, FLAG_DATA, FLAG_PING};
@@ -258,20 +259,18 @@ fn reconnect_backoff(attempt: u32, max_delay_secs: u64) -> u64 {
     delay.min(max_delay_secs)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run_client_full(
     remote: std::net::SocketAddr,
     psk: &[u8; 32],
-    tun_ip: std::net::Ipv4Addr,
-    netmask: u8,
-    gateway: std::net::Ipv4Addr,
     mtu: u16,
     max_retries: Option<u32>,
     reconnect_max_delay: u64,
     heartbeat_interval: Option<u64>,
     heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
-    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
+    let tun_ip: std::net::Ipv4Addr = DEFAULT_CLIENT_TUN_IP.parse().unwrap();
+    let netmask = DEFAULT_TUN_NETMASK;
+    let gateway: std::net::Ipv4Addr = DEFAULT_GATEWAY.parse().unwrap();    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
     tracing::info!(iface = "ts0", ip = %tun_ip, netmask = netmask, "Created TUN interface");
 
     let saved_route = crate::route::save_default_route().await?;

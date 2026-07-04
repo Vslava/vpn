@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
+use crate::config;
 use crate::crypto::Crypto;
 use crate::error::Error;
 use crate::protocol::{self, Frame, FLAG_PONG};
@@ -15,12 +16,12 @@ const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 pub async fn run_server(
     addr: std::net::SocketAddr,
     psk: &[u8; 32],
-    tun_ip: std::net::Ipv4Addr,
     mtu: u16,
-    netmask: u8,
+    tun_subnet: Option<&str>,
 ) -> Result<(), Error> {
+    let (tun_ip, netmask) = config::parse_tun_subnet(tun_subnet)?;
     let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
-    tracing::info!(iface = "ts0", ip = %tun_ip, "Created TUN interface");
+    tracing::info!(iface = "ts0", ip = %tun_ip, netmask = netmask, "Created TUN interface");
 
     let ext_iface = crate::route::save_default_route()
         .await

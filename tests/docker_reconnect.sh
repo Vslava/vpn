@@ -119,8 +119,6 @@ psk = "$PSK"
 mtu = 1400
 [server]
 listen = "0.0.0.0:8443"
-tun_ip = "10.0.0.1"
-tun_netmask = 30
 EOF
 
 cat > /tmp/ts-r1-client.toml << EOF
@@ -129,9 +127,6 @@ psk = "$PSK"
 mtu = 1400
 [client]
 remote = "${SERVER_IP}:8443"
-tun_ip = "10.0.0.2"
-tun_netmask = 30
-gateway = "10.0.0.1"
 max_retries = 10
 reconnect_max_delay = 30
 heartbeat_interval = 5
@@ -186,8 +181,6 @@ psk = "$PSK"
 mtu = 1400
 [server]
 listen = "0.0.0.0:8443"
-tun_ip = "10.0.0.1"
-tun_netmask = 30
 EOF
 
 cat > /tmp/ts-r2-client.toml << EOF
@@ -196,9 +189,6 @@ psk = "$PSK"
 mtu = 1400
 [client]
 remote = "${SERVER_IP}:8443"
-tun_ip = "10.0.0.2"
-tun_netmask = 30
-gateway = "10.0.0.1"
 max_retries = 0
 reconnect_max_delay = 30
 heartbeat_interval = 5
@@ -247,8 +237,6 @@ psk = "$PSK"
 mtu = 1400
 [server]
 listen = "0.0.0.0:8443"
-tun_ip = "10.0.0.1"
-tun_netmask = 30
 EOF
 
 cat > /tmp/ts-r3-client.toml << EOF
@@ -257,9 +245,6 @@ psk = "$PSK"
 mtu = 1400
 [client]
 remote = "${SERVER_IP}:8443"
-tun_ip = "10.0.0.2"
-tun_netmask = 30
-gateway = "10.0.0.1"
 max_retries = 10
 reconnect_max_delay = 30
 heartbeat_interval = 5

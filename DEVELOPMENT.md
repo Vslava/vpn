@@ -7,7 +7,7 @@ P2 (Production Ready) завершён. Текущий этап — P3 (Hardenin
 ## Тестирование
 
 ```bash
-cargo test --lib          # unit-тесты (72 теста)
+cargo test --lib          # unit-тесты (71 тест)
 cargo test --tests        # интеграционные тесты (без sudo некоторые ignored)
 cargo clippy --all        # lint
 cargo llvm-cov --all      # покрытие (требуется cargo-llvm-cov)

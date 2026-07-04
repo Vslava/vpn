@@ -1,5 +1,11 @@
 use serde::Deserialize;
 
+pub const DEFAULT_TUN_SUBNET: &str = "10.0.0.0/24";
+pub const DEFAULT_SERVER_TUN_IP: &str = "10.0.0.1";
+pub const DEFAULT_CLIENT_TUN_IP: &str = "10.0.0.2";
+pub const DEFAULT_TUN_NETMASK: u8 = 24;
+pub const DEFAULT_GATEWAY: &str = "10.0.0.1";
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub tunnel: TunnelConfig,
@@ -16,9 +22,6 @@ pub struct TunnelConfig {
 #[derive(Debug, Deserialize)]
 pub struct ClientConfig {
     pub remote: String,
-    pub tun_ip: Option<String>,
-    pub tun_netmask: Option<u8>,
-    pub gateway: Option<String>,
     #[serde(default)]
     pub max_retries: Option<u32>,
     #[serde(default)]
@@ -32,8 +35,8 @@ pub struct ClientConfig {
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
     pub listen: String,
-    pub tun_ip: Option<String>,
-    pub tun_netmask: Option<u8>,
+    #[serde(default)]
+    pub tun_subnet: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,15 +84,6 @@ impl Config {
                     )
                 })?;
                 validate_socket_addr(&client.remote)?;
-                if let Some(ref ip) = client.tun_ip {
-                    validate_ip(ip)?;
-                }
-                if let Some(ref gw) = client.gateway {
-                    validate_ip(gw)?;
-                }
-                if let Some(mask) = client.tun_netmask {
-                    validate_netmask(mask)?;
-                }
             }
             Mode::Server => {
                 let server = self.server.as_ref().ok_or_else(|| {
@@ -98,11 +92,8 @@ impl Config {
                     )
                 })?;
                 validate_socket_addr(&server.listen)?;
-                if let Some(ref ip) = server.tun_ip {
-                    validate_ip(ip)?;
-                }
-                if let Some(mask) = server.tun_netmask {
-                    validate_netmask(mask)?;
+                if let Some(ref subnet) = server.tun_subnet {
+                    validate_cidr(subnet)?;
                 }
             }
         }
@@ -139,13 +130,6 @@ fn validate_socket_addr(addr: &str) -> Result<(), crate::error::Error> {
     Ok(())
 }
 
-fn validate_ip(ip: &str) -> Result<(), crate::error::Error> {
-    ip.parse::<std::net::Ipv4Addr>().map_err(|e| {
-        crate::error::Error::Config(format!("invalid IP address '{ip}': {e}"))
-    })?;
-    Ok(())
-}
-
 fn validate_netmask(mask: u8) -> Result<(), crate::error::Error> {
     if mask == 0 || mask > 32 {
         return Err(crate::error::Error::Config(format!(
@@ -158,6 +142,38 @@ fn validate_netmask(mask: u8) -> Result<(), crate::error::Error> {
 pub fn netmask_from_prefix(bits: u8) -> std::net::Ipv4Addr {
     let mask = if bits == 0 { 0u32 } else { !0u32 << (32 - bits as u32) };
     std::net::Ipv4Addr::from(mask.to_be_bytes())
+}
+
+fn validate_cidr(cidr: &str) -> Result<(), crate::error::Error> {
+    let (ip_str, prefix_str) = cidr
+        .split_once('/')
+        .ok_or_else(|| crate::error::Error::Config(format!("invalid CIDR '{cidr}': missing '/' prefix")))?;
+    let _ip: std::net::Ipv4Addr = ip_str.parse().map_err(|_| {
+        crate::error::Error::Config(format!("invalid CIDR '{cidr}': invalid IP part"))
+    })?;
+    let prefix: u8 = prefix_str.parse().map_err(|_| {
+        crate::error::Error::Config(format!("invalid CIDR '{cidr}': invalid prefix"))
+    })?;
+    validate_netmask(prefix)?;
+    Ok(())
+}
+
+pub fn parse_tun_subnet(subnet: Option<&str>) -> Result<(std::net::Ipv4Addr, u8), crate::error::Error> {
+    let cidr = subnet.unwrap_or(DEFAULT_TUN_SUBNET);
+    let (ip_str, prefix_str) = cidr
+        .split_once('/')
+        .ok_or_else(|| crate::error::Error::Config(format!("invalid subnet '{cidr}'")))?;
+    let server_ip: std::net::Ipv4Addr = ip_str.parse().map_err(|_| {
+        crate::error::Error::Config(format!("invalid subnet IP '{ip_str}'"))
+    })?;
+    if server_ip == std::net::Ipv4Addr::new(0, 0, 0, 0) {
+        return Ok((DEFAULT_SERVER_TUN_IP.parse().unwrap(), DEFAULT_TUN_NETMASK));
+    }
+    let prefix: u8 = prefix_str.parse().map_err(|_| {
+        crate::error::Error::Config(format!("invalid prefix '{prefix_str}'"))
+    })?;
+    validate_netmask(prefix)?;
+    Ok((server_ip, prefix))
 }
 
 #[cfg(test)]
@@ -265,17 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_ip_ok() {
-        assert!(validate_ip("10.0.0.1").is_ok());
-    }
-
-    #[test]
-    fn test_validate_ip_bad() {
-        let err = validate_ip("not-an-ip").unwrap_err();
-        assert!(err.to_string().contains("invalid IP address"));
-    }
-
-    #[test]
     fn test_validate_for_mode_client_requires_client_section() {
         let cfg = Config {
             tunnel: TunnelConfig {
@@ -315,32 +320,6 @@ mod tests {
             },
             client: Some(ClientConfig {
                 remote: "1.2.3.4:8443".to_string(),
-                tun_ip: Some("10.0.0.2".to_string()),
-                tun_netmask: Some(30),
-                gateway: None,
-                max_retries: None,
-                reconnect_max_delay: None,
-                heartbeat_interval: None,
-                heartbeat_timeout: None,
-            }),
-            server: None,
-        };
-        assert!(cfg.validate_for_mode(&Mode::Client).is_ok());
-    }
-
-    #[test]
-    fn test_validate_for_mode_client_with_gateway() {
-        let cfg = Config {
-            tunnel: TunnelConfig {
-                psk: "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
-                    .to_string(),
-                mtu: None,
-            },
-            client: Some(ClientConfig {
-                remote: "10.0.0.1:8443".to_string(),
-                tun_ip: Some("10.0.0.2".to_string()),
-                tun_netmask: Some(30),
-                gateway: Some("10.0.0.1".to_string()),
                 max_retries: None,
                 reconnect_max_delay: None,
                 heartbeat_interval: None,
@@ -362,11 +341,45 @@ mod tests {
             client: None,
             server: Some(ServerConfig {
                 listen: "0.0.0.0:8443".to_string(),
-                tun_ip: Some("10.0.0.1".to_string()),
-                tun_netmask: Some(30),
+                tun_subnet: None,
             }),
         };
         assert!(cfg.validate_for_mode(&Mode::Server).is_ok());
+    }
+
+    #[test]
+    fn test_validate_for_mode_server_with_subnet() {
+        let cfg = Config {
+            tunnel: TunnelConfig {
+                psk: "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
+                    .to_string(),
+                mtu: None,
+            },
+            client: None,
+            server: Some(ServerConfig {
+                listen: "0.0.0.0:8443".to_string(),
+                tun_subnet: Some("10.100.0.0/24".to_string()),
+            }),
+        };
+        assert!(cfg.validate_for_mode(&Mode::Server).is_ok());
+    }
+
+    #[test]
+    fn test_validate_for_mode_server_bad_cidr() {
+        let cfg = Config {
+            tunnel: TunnelConfig {
+                psk: "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
+                    .to_string(),
+                mtu: None,
+            },
+            client: None,
+            server: Some(ServerConfig {
+                listen: "0.0.0.0:8443".to_string(),
+                tun_subnet: Some("not-a-cidr".to_string()),
+            }),
+        };
+        let err = cfg.validate_for_mode(&Mode::Server).unwrap_err();
+        assert!(err.to_string().contains("CIDR"));
     }
 
     #[test]
@@ -379,9 +392,6 @@ mod tests {
             },
             client: Some(ClientConfig {
                 remote: "1.2.3.4:8443".to_string(),
-                tun_ip: None,
-                tun_netmask: None,
-                gateway: None,
                 max_retries: None,
                 reconnect_max_delay: None,
                 heartbeat_interval: None,
@@ -389,8 +399,7 @@ mod tests {
             }),
             server: Some(ServerConfig {
                 listen: "0.0.0.0:8443".to_string(),
-                tun_ip: None,
-                tun_netmask: None,
+                tun_subnet: None,
             }),
         };
         assert!(cfg.validate_for_mode(&Mode::Client).is_ok());

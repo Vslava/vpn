@@ -43,9 +43,6 @@ mtu = 1400
 
 [client]
 remote = "1.2.3.4:8443"
-tun_ip = "10.0.0.2"
-tun_netmask = 30
-gateway = "10.0.0.1"
 max_retries = 10
 reconnect_max_delay = 30
 heartbeat_interval = 30

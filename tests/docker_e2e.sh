@@ -56,8 +56,6 @@ mtu = 1400
 
 [server]
 listen = "0.0.0.0:8443"
-tun_ip = "10.0.0.1"
-tun_netmask = 30
 EOF
 
 cat > "$CLIENT_TOML" <<EOF
@@ -67,9 +65,6 @@ mtu = 1400
 
 [client]
 remote = "SERVER_IP_PLACEHOLDER:8443"
-tun_ip = "10.0.0.2"
-tun_netmask = 30
-gateway = "10.0.0.1"
 EOF
 
 echo "=== Starting server ==="

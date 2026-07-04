@@ -105,26 +105,13 @@ async fn run_client_mode(cfg: &config::Config, psk: [u8; 32]) {
         std::process::exit(1);
     });
 
-    let tun_ip_str = client_cfg.tun_ip.as_deref().unwrap_or("10.0.0.2");
-    let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid TUN IP '{tun_ip_str}': {e}");
-        std::process::exit(1);
-    });
-    let netmask = client_cfg.tun_netmask.unwrap_or(30);
-
-    let gw_str = client_cfg.gateway.as_deref().unwrap_or("10.0.0.1");
-    let gateway: std::net::Ipv4Addr = gw_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid gateway '{gw_str}': {e}");
-        std::process::exit(1);
-    });
-
     let mtu = cfg.tunnel.mtu.unwrap_or(1400);
     let max_retries = client_cfg.max_retries;
     let reconnect_max_delay = client_cfg.reconnect_max_delay.unwrap_or(30);
     let heartbeat_interval = client_cfg.heartbeat_interval;
     let heartbeat_timeout = client_cfg.heartbeat_timeout;
 
-    if let Err(e) = client::run_client_full(remote, &psk, tun_ip, netmask, gateway, mtu, max_retries, reconnect_max_delay, heartbeat_interval, heartbeat_timeout).await {
+    if let Err(e) = client::run_client_full(remote, &psk, mtu, max_retries, reconnect_max_delay, heartbeat_interval, heartbeat_timeout).await {
         tracing::error!("client error: {e}");
     }
 }
@@ -143,16 +130,10 @@ async fn run_server_mode(cfg: &config::Config, psk: [u8; 32]) {
         std::process::exit(1);
     });
 
-    let tun_ip_str = server_cfg.tun_ip.as_deref().unwrap_or("10.0.0.1");
-    let tun_ip: std::net::Ipv4Addr = tun_ip_str.parse().unwrap_or_else(|e| {
-        eprintln!("error: invalid TUN IP '{tun_ip_str}': {e}");
-        std::process::exit(1);
-    });
-    let netmask = server_cfg.tun_netmask.unwrap_or(30);
-
     let mtu = cfg.tunnel.mtu.unwrap_or(1400);
+    let tun_subnet = server_cfg.tun_subnet.as_deref();
 
-    if let Err(e) = server::run_server(listen, &psk, tun_ip, mtu, netmask).await {
+    if let Err(e) = server::run_server(listen, &psk, mtu, tun_subnet).await {
         tracing::error!("server error: {e}");
     }
 }
