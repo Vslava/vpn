@@ -72,6 +72,6 @@
 - `src/lib.rs` — library crate for integration tests
 - `tests/route_integration.rs` — автоматические интеграционные тесты
 - `tests/run_route_tests.sh` — bash-скрипт ручных тестов
-- `docs/VERIFICATION_P1.md` — верификация P1 (P1.1 помечен `[x]`)
-- `docs/THOUGHTS.md` — Q15 (rtnetlink vs ip route)
+- `specs/VERIFICATION_P1.md` — верификация P1 (P1.1 помечен `[x]`)
+- `specs/THOUGHTS.md` — Q15 (rtnetlink vs ip route)
 - `Cargo.toml` — добавлены rtnetlink, netlink-packet-route, tokio-stream

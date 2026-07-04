@@ -77,7 +77,7 @@
 - `src/handshake.rs` — ECDH handshake implementation (X25519 + PSK hybrid)
 - `src/error.rs` — добавлен `Error::Handshake` variant
 - `tests/handshake_integration.rs` — integration-тесты с реальным TCP
-- `docs/VERIFICATION_P1.md` — верификация P1 (P1.2 помечен `[x]`)
-- `docs/THOUGHTS.md` — Q1 (X25519 ECDH + PSK), остальные решения
+- `specs/VERIFICATION_P1.md` — верификация P1 (P1.2 помечен `[x]`)
+- `specs/THOUGHTS.md` — Q1 (X25519 ECDH + PSK), остальные решения
 - `AGENTS.md` — добавлены правила работы с VERIFICATION файлами
 - `Cargo.toml` — добавлены hmac, sha2

@@ -61,6 +61,6 @@
 ## Relevant Files
 
 - `AGENTS.md` — уточнённые правила
-- `docs/THOUGHTS.md` — очищен, добавлено Q14
-- `docs/VERIFICATION_P0.md` — финальный чеклист
-- `docs/VERIFICATION_P1.md` — добавлен блок о перенесённых тестах
+- `specs/THOUGHTS.md` — очищен, добавлено Q14
+- `specs/VERIFICATION_P0.md` — финальный чеклист
+- `specs/VERIFICATION_P1.md` — добавлен блок о перенесённых тестах

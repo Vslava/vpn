@@ -8,8 +8,8 @@
 
 ### Документы
 
-- **`docs/PRD.md`** — полный PRD: overview, goals/non-goals, functional и non-functional requirements, архитектура, компоненты, платформы, сценарии, security, open questions, milestones.
-- **`docs/THOUGHTS.md`** — зафиксированы все принятые решения с форматом: вопрос, варианты, решение, формулировка человека.
+- **`specs/PRD.md`** — полный PRD: overview, goals/non-goals, functional и non-functional requirements, архитектура, компоненты, платформы, сценарии, security, open questions, milestones.
+- **`specs/THOUGHTS.md`** — зафиксированы все принятые решения с форматом: вопрос, варианты, решение, формулировка человека.
 - **`AGENTS.md`** — правило для opencode: при принятии решения записывать в THOUGHTS.md в формате вопрос/варианты/решение/формулировка человека.
 
 ### Принятые решения
@@ -45,6 +45,6 @@
 
 ## Relevant Files
 
-- `docs/PRD.md` — Product Requirements Document
-- `docs/THOUGHTS.md` — Архитектурные решения с обоснованием
+- `specs/PRD.md` — Product Requirements Document
+- `specs/THOUGHTS.md` — Архитектурные решения с обоснованием
 - `AGENTS.md` — Правила для opencode

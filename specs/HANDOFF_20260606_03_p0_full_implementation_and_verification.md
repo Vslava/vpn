@@ -78,9 +78,9 @@ src/
 
 ## Relevant Files
 
-- `docs/IMPLEMENTATION_PLAN.md` — полный план всех фаз
-- `docs/VERIFICATION_P0.md` — верификация P0 (все тесты пройдены)
-- `docs/VERIFICATION_P1.md` — верификация P1 (с добавленными тестами из P0)
-- `docs/VERIFICATION_P2.md` — верификация P2
-- `docs/THOUGHTS.md` — архитектурные решения
+- `specs/IMPLEMENTATION_PLAN.md` — полный план всех фаз
+- `specs/VERIFICATION_P0.md` — верификация P0 (все тесты пройдены)
+- `specs/VERIFICATION_P1.md` — верификация P1 (с добавленными тестами из P0)
+- `specs/VERIFICATION_P2.md` — верификация P2
+- `specs/THOUGHTS.md` — архитектурные решения
 - `AGENTS.md` — правила проекта

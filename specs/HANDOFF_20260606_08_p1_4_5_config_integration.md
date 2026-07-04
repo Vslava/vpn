@@ -104,4 +104,4 @@
 - `src/main.rs` — entry points, calls orchestration
 - `tests/docker_e2e.sh` — end-to-end test suite (5 protocols)
 - `tests/Dockerfile.e2e` — test container image
-- `docs/VERIFICATION_P1.md` — P1.4 and P1.5 marked `[x]`
+- `specs/VERIFICATION_P1.md` — P1.4 and P1.5 marked `[x]`

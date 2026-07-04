@@ -29,7 +29,7 @@
 - `#[ignore = "requires root (sudo) for TUN creation"]`
 - Создаёт TUN, TCP listener, spawn сервер, подключает клиент, отправляет encrypted frame, получает loopback-ответ
 
-### `docs/VERIFICATION_P1.md`
+### `specs/VERIFICATION_P1.md`
 
 - Добавлен `[x]` для "server TUN создаётся"
 - Все end-to-end проверки (forward, ping, HTTP, DNS, ICMP) перенесены в P1.5
@@ -61,4 +61,4 @@
 - `src/server.rs` — server forwarder (TUN creation, bidirectional forwarding)
 - `src/main.rs` — `run_server_mode` теперь передаёт PSK + TUN config
 - `tests/server_integration.rs` — integration test (требует sudo)
-- `docs/VERIFICATION_P1.md` — P1.3 marked `[x]`
+- `specs/VERIFICATION_P1.md` — P1.3 marked `[x]`

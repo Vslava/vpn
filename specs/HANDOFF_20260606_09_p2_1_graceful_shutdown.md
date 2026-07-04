@@ -33,7 +33,7 @@
 
 - `Cargo.toml`: добавлен `"rt"` в features `tokio-util` (нужен для `CancellationToken`)
 - `tests/server_integration.rs`: обновлён вызов `handle_client` (новый параметр `CancellationToken`)
-- `docs/VERIFICATION_P2.md`: P2.1 отмечен `[x]`
+- `specs/VERIFICATION_P2.md`: P2.1 отмечен `[x]`
 
 ## What Worked
 
@@ -65,4 +65,4 @@
 - `src/client.rs` — `run_client` (+cancel), `run_client_full` (+signal watcher)
 - `src/server.rs` — `handle_client` (+cancel), `run_server` (+signal watcher + accept-with-cancel)
 - `src/lib.rs` — `wait_for_shutdown()`
-- `docs/VERIFICATION_P2.md` — P2.1 checklist
+- `specs/VERIFICATION_P2.md` — P2.1 checklist

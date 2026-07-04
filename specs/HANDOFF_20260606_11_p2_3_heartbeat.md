@@ -51,7 +51,7 @@
 - ✅ 60/60 unit tests pass
 - ✅ clippy: 0 warnings (`-D warnings`)
 - ✅ 14/14 Docker verification tests pass
-- ✅ `docs/VERIFICATION_P2.md`: P2.3 marked `[x]`
+- ✅ `specs/VERIFICATION_P2.md`: P2.3 marked `[x]`
 
 ## Next Steps
 
@@ -67,4 +67,4 @@
 - `src/config.rs` — heartbeat_interval, heartbeat_timeout
 - `src/error.rs` — Error::Timeout
 - `tests/docker_heartbeat.sh` — 3 теста, 14 checks
-- `docs/VERIFICATION_P2.md` — P2.3 checklist marked passed
+- `specs/VERIFICATION_P2.md` — P2.3 checklist marked passed

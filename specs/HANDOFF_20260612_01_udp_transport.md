@@ -77,4 +77,4 @@
 | Docker e2e | `tests/docker_e2e.sh` |
 | Docker heartbeat | `tests/docker_heartbeat.sh` |
 | Docker reconnect | `tests/docker_reconnect.sh` |
-| Docs | `docs/PRD.md`, `docs/IMPLEMENTATION_PLAN.md`, `docs/THOUGHTS.md` (Q23), `docs/VERIFICATION_P3.md` |
+| Docs | `specs/PRD.md`, `specs/IMPLEMENTATION_PLAN.md`, `specs/THOUGHTS.md` (Q23), `specs/VERIFICATION_P3.md` |

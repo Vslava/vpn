@@ -77,7 +77,7 @@
 - `src/tun.rs` — io::ErrorKind-based error messages (PermissionDenied → sudo hint)
 - `src/crypto.rs` — AEAD error messages
 - `tests/integration.rs` — config error handling tests
-- `docs/VERIFICATION_P2.md` — все P2 checks marked [x], Docker результаты
+- `specs/VERIFICATION_P2.md` — все P2 checks marked [x], Docker результаты
 - `docs/SETUP_LINUX.md` — Linux build, config, run guide
 - `docs/SETUP_WINDOWS.md` — Windows guide с limitations table
-- `docs/THOUGHTS.md` — Q20: multi-client decision
+- `specs/THOUGHTS.md` — Q20: multi-client decision

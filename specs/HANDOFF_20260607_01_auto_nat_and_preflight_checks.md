@@ -16,7 +16,7 @@ Two TDD cycles completed. First: server now automatically configures iptables MA
 - **`tests/nat_integration.rs`** (new): 4 tests — full cycle, idempotent setup, idempotent cleanup, graceful without iptables
 - **`tests/docker_e2e.sh`**, `docker_heartbeat.sh`, `docker_reconnect.sh`: removed manual `iptables MASQUERADE` (now automatic)
 - **`docs/SETUP_LINUX.md`**: fixed false claim that "NAT настраивается автоматически" — now accurately describes the automatic behavior
-- **`docs/THOUGHTS.md`**: recorded Q21 decision
+- **`specs/THOUGHTS.md`**: recorded Q21 decision
 - **`README.md`**: added "Автоматическая настройка NAT" to feature list
 
 ### Preflight Checks — commit `27268b3`
@@ -34,7 +34,7 @@ Two TDD cycles completed. First: server now automatically configures iptables MA
 - **`src/main.rs`**: runs checks after config validation, before mode dispatch. On failure: prints all errors to stderr, exits with code 1
 - **`tests/checks_integration.rs`** (new): integration tests — root fails without sudo, all-clear with sudo (ignored)
 - **`src/checks.rs`** `#[cfg(test)]`: 7 unit tests — check composition, failure collection, no-fail-fast, root check UID-aware
-- **`docs/THOUGHTS.md`**: recorded Q22 decision
+- **`specs/THOUGHTS.md`**: recorded Q22 decision
 - **`DEVELOPMENT.md`**: updated test commands
 
 ## What Worked
@@ -65,5 +65,5 @@ Two TDD cycles completed. First: server now automatically configures iptables MA
 | Preflight checks | `src/checks.rs`, `tests/checks_integration.rs` |
 | Server wiring | `src/server.rs` (lines 22-33, 70-72) |
 | CLI wiring | `src/main.rs` (lines 67-81) |
-| Docs | `docs/SETUP_LINUX.md`, `docs/THOUGHTS.md` (Q21, Q22) |
+| Docs | `docs/SETUP_LINUX.md`, `specs/THOUGHTS.md` (Q21, Q22) |
 | Docker tests (updated) | `tests/docker_e2e.sh`, `tests/docker_heartbeat.sh`, `tests/docker_reconnect.sh` |

@@ -40,7 +40,7 @@ Using `docker exec ts-client ping ... &` (background) sometimes keeps the PID al
 
 - **12/12 Docker tests pass** (all 4 scenarios)
 - `tests/docker_reconnect.sh` — ready to run
-- `docs/VERIFICATION_P2.md` — P2.2 marked `[x]`
+- `specs/VERIFICATION_P2.md` — P2.2 marked `[x]`
 - P2.3+ not started
 
 ## Next Steps
@@ -52,6 +52,6 @@ Using `docker exec ts-client ping ... &` (background) sometimes keeps the PID al
 
 - `tests/docker_reconnect.sh` — 4 integration tests for reconnect (12 checks)
 - `tests/Dockerfile.e2e` — Docker image with procps for pkill
-- `docs/VERIFICATION_P2.md` — P2.2 checklist marked passed
+- `specs/VERIFICATION_P2.md` — P2.2 checklist marked passed
 - `src/client.rs` — `run_client_session()`, `reconnect_backoff()`
 - `src/server.rs` — `run_server()` with accept loop
