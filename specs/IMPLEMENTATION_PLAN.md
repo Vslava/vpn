@@ -316,12 +316,40 @@ UDP datagrams are self-framing — no need for a 2-byte length prefix.
   - No TCP-specific setup needed (no `iptables -A OUTPUT -p tcp --dport 8443 -j DROP` etc.)
   - Test scripts remain largely the same (they test app behavior, not transport protocol)
 
+### Step P3.7: Auto TUN parameters — remove from config
+
+**Goal**: Убрать `tun_ip`, `tun_netmask`, `gateway` из пользовательского конфига. Сервер сам управляет подсетью, клиент получает IP автоматически. Подготовка к multi-client (сервер назначает IP при handshake).
+
+- **`src/config.rs`**:
+  - `ClientConfig`: удалить поля `tun_ip`, `tun_netmask`, `gateway`
+  - `ServerConfig`: удалить поля `tun_ip`, `tun_netmask`; добавить `tun_subnet: Option<String>` (default `"10.0.0.0/24"`)
+  - Добавить константы/функции: `DEFAULT_TUN_SUBNET`, `server_tun_ip(&subnet) -> Ipv4Addr`, `client_tun_ip(&subnet) -> Ipv4Addr`
+  - Удалить валидацию удалённых полей, добавить валидацию `tun_subnet` (CIDR-нотация)
+  - `run_preflight_checks` для сервера: проверять что подсеть не конфликтует с существующими интерфейсами
+
+- **`src/server.rs`**:
+  - `run_server()`: принимать `tun_subnet`, вычислять server IP (`server_tun_ip()`), netmask из CIDR
+  - TUN создаётся с IP из подсети
+
+- **`src/client.rs`**:
+  - `run_client_full()`: убрать параметры `tun_ip`, `netmask`, `gateway`; использовать defaults (`10.0.0.2`, `24`, `10.0.0.1`)
+  - Для multi-client (будущее): IP будет приходить из handshake
+
+- **`src/main.rs`**:
+  - Убрать парсинг `tun_ip`, `tun_netmask`, `gateway` из `run_client_mode()`
+  - Убрать парсинг `tun_ip`, `tun_netmask` из `run_server_mode()`; передавать `tun_subnet` из конфига
+
+- **Docker-скрипты** (`tests/docker_*.sh`): удалить `tun_ip`, `tun_netmask`, `gateway` из конфиг-файлов в тестах
+
+- **Документация**: `README.md` — обновить примеры конфигов; `docs/SETUP_*.md` — обновить описание конфигурации
+
 ### P3 Artifacts
 
 - TCP-over-TCP meltdown eliminated
 - Throughput for video streaming restored (tested via Docker e2e)
 - All existing tests pass (updated for UDP)
 - Handshake retransmission works (client retries on packet loss)
+- TUN-параметры убраны из конфига, автоматизированы (default `10.0.0.0/24`)
 - No new dependencies
 
 ---
@@ -423,7 +451,7 @@ P1.1 ─────────────────────────
                                               ↓
 P2.1 ─→ P2.2 ─→ P2.3 ─→ P2.4 ─→ P2.5 ─→ P2.6
                                               ↓
-P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6
+P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6 ─→ P3.7
 ```
 
 - P0 steps are sequential (each builds on the previous)
@@ -463,3 +491,5 @@ P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6
 - [ ] Все существующие тесты проходят (обновлены под UDP)
 - [ ] Docker e2e тесты проходят
 - [ ] `cargo clippy -- -D warnings` — чисто
+- [ ] tun_ip, tun_netmask, gateway убраны из конфига; TUN-подсеть управляется сервером (default `10.0.0.0/24`)
+- [ ] Клиент использует автоматически назначенные IP/netmask/gateway

@@ -222,7 +222,73 @@ ping -c 100 10.0.0.1  # ping через туннель
 
 ---
 
-## P3.7: Docker end-to-end
+## P3.7: Auto TUN — удалить tun_* из конфига
+
+### Проверка: server.toml без tun_ip/tun_netmask
+
+```toml
+[tunnel]
+psk = "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
+
+[server]
+listen = "0.0.0.0:8443"
+# tun_ip и tun_netmask отсутствуют — должны быть defaults
+```
+
+**Ожидаемый результат**: сервер запускается, создаёт TUN `ts0` с IP `10.0.0.1/24`.
+
+### Проверка: client.toml без tun_ip/netmask/gateway
+
+```toml
+[tunnel]
+psk = "deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe"
+
+[client]
+remote = "SERVER_IP:8443"
+# tun_ip, tun_netmask, gateway отсутствуют — должны быть defaults
+```
+
+**Ожидаемый результат**: клиент запускается, создаёт TUN `ts0` с IP `10.0.0.2/24`, gateway `10.0.0.1`.
+
+### Проверка: server.toml с tun_subnet
+
+```toml
+[server]
+listen = "0.0.0.0:8443"
+tun_subnet = "10.100.0.0/24"
+```
+
+**Ожидаемый результат**: сервер создаёт TUN с IP `10.100.0.1/24` (первый IP подсети).
+
+### Проверка: валидация tun_subnet
+
+- `tun_subnet = "not-a-cidr"` → ошибка конфигурации
+- `tun_subnet = "10.0.0.0/33"` → ошибка (невалидная маска)
+- `tun_subnet = "10.0.0.0/8"` → ок (валидная CIDR)
+
+### Проверка: старый конфиг с tun_ip выдаёт предупреждение
+
+**Ожидаемый результат**: неизвестные ключи в конфиге игнорируются с warning (поведение serde по умолчанию с `#[serde(deny_unknown_fields)]` не используется).
+
+### Unit test
+
+```bash
+cargo test --lib config
+```
+
+### Проверка: Docker-скрипты
+
+```bash
+bash tests/docker_e2e.sh
+bash tests/docker_heartbeat.sh
+bash tests/docker_reconnect.sh
+```
+
+**Ожидаемый результат**: все Docker-тесты проходят с обновлёнными конфигами (без tun_ip/netmask/gateway).
+
+---
+
+## P3.8: Docker end-to-end
 
 ### Проверка: docker_e2e.sh
 
@@ -255,7 +321,7 @@ bash tests/docker_reconnect.sh
 
 ---
 
-## P3.8: Unit tests regression
+## P3.9: Unit tests regression
 
 ### Проверка: все unit тесты
 
@@ -291,5 +357,6 @@ cargo build --release
 - [ ] P3.4: Server — UDP data loop с recv_from/send_to
 - [ ] P3.5: Client — UDP data loop с recv/send
 - [ ] P3.6: Performance — видео стриминг без деградации
-- [ ] P3.7: Docker e2e — все три скрипта проходят
-- [ ] P3.8: Tests — cargo test + clippy clean
+- [ ] P3.7: Auto TUN — tun_ip/netmask/gateway убраны из конфига, сервер управляет подсетью
+- [ ] P3.8: Docker e2e — все три скрипта проходят (с обновлёнными конфигами)
+- [ ] P3.9: Tests — cargo test + clippy clean
