@@ -1,6 +1,6 @@
 # Implementation Plan: traffic-sentinel
 
-> **Note**: P0–P2 реализованы на TCP-транспорте. P3 (текущая фаза) переводит транспорт на UDP для устранения TCP-over-TCP meltdown. Ниже — оригинальный план (P0–P2) и новый план (P3). После P3 project structure и key interfaces будут обновлены под UDP.
+> **Note**: P0–P2 реализованы на TCP-транспорте. P3 перевёл транспорт на UDP. P4 (текущая фаза) — multi-client поддержка. Ниже — оригинальный план и дополнения P3–P4.
 
 ## 1. Project Structure
 
@@ -12,13 +12,16 @@ traffic-sentinel/
 │   ├── config.rs         # TOML config: [client], [server], [tunnel]
 │   ├── error.rs          # Unified error type
 │   ├── crypto.rs         # XChaCha20-Poly1305 encrypt/decrypt, X25519 ECDH
-│   ├── protocol.rs       # Packet framing: length + seq + flags + nonce + payload
+│   ├── protocol.rs       # Packet framing: nonce + seq + flags + payload (no length prefix)
 │   ├── tun.rs            # TUN interface create/delete, IP/MTU/route setup
 │   ├── route.rs          # Save/restore default route
-│   ├── transport.rs      # TCP connect/listen, read/write framed packets
-│   ├── handshake.rs      # Hybrid PSK + X25519 ECDH handshake
-│   ├── client.rs         # Client pipeline: TUN→encrypt→TCP, TCP→decrypt→TUN
-│   ├── server.rs         # Server pipeline: TCP→decrypt→forward, forward→encrypt→TCP
+│   ├── transport.rs      # UDP bind/connect (tokio UdpSocket)
+│   ├── handshake.rs      # Hybrid PSK + X25519 ECDH handshake (69-byte server_hello)
+│   ├── client.rs         # Client pipeline: TUN→encrypt→UDP, UDP→decrypt→TUN
+│   ├── server.rs         # Server pipeline: UDP→decrypt→TUN, TUN→encrypt→UDP (multi-client dispatch)
+│   ├── ip_pool.rs        # IP pool for multi-client (allocate/release)
+│   ├── checks.rs         # Preflight checks (root, TUN, iptables, ip_forward)
+│   ├── nat.rs            # iptables MASQUERADE setup/cleanup
 │   └── signal.rs         # SIGTERM/SIGINT → graceful shutdown
 ```
 
@@ -483,13 +486,14 @@ pub async fn set_tun_route(tun_gw: Ipv4Addr) -> Result<()>;
 pub async fn add_exclude_route(server_ip: Ipv4Addr) -> Result<()>;
 pub async fn restore_route(route: DefaultRoute) -> Result<()>;
 
-// transport.rs (P0–P2: TCP; P3: UDP)
+// transport.rs (P3: UDP)
 pub async fn udp_bind(addr: SocketAddr) -> Result<UdpSocket>;
 pub async fn udp_connect(addr: SocketAddr) -> Result<UdpSocket>;
 
-// handshake.rs (P3: UDP)
-pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<[u8; 32]>;
-pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], SocketAddr)>;
+// handshake.rs (P4: multi-client, 69-byte server_hello)
+pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], Ipv4Addr, u8)>;
+pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32], ip_pool: &Mutex<IpPool>) -> Result<([u8; 32], SocketAddr, Ipv4Addr, u8)>;
+pub async fn server_handshake_dispatch(socket: &UdpSocket, psk: &[u8; 32], ip_pool: &Mutex<IpPool>, client_hello: &[u8; 64], client_addr: SocketAddr) -> Result<([u8; 32], SocketAddr, Ipv4Addr, u8)>;
 
 // protocol.rs (P3: no length prefix)
 pub fn encode(frame: &Frame) -> Vec<u8>;       // [nonce:24][seq:4][flags:1][payload]

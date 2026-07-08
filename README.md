@@ -57,7 +57,8 @@ remote = "SERVER_IP:8443"
 - Автоматическая настройка NAT (MASQUERADE) на сервере через iptables
 - Graceful shutdown (SIGTERM/SIGINT → восстановление маршрутов, удаление TUN)
 - Reconnect с exponential backoff (клиент)
-- Heartbeat/PING-PONG для детекта разрыва UDP
+- Heartbeat/PING-PONG для детекта разрыва соединения
+- Multi-client: сервер обслуживает нескольких клиентов одновременно (пул IP, автоназначение)
 - Структурированное логирование (tracing, уровни через `RUST_LOG`)
 - Единый статический бинарник
 

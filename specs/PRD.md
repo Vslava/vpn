@@ -43,7 +43,7 @@
 | FR7 | Конфигурация через TOML-файл: секции `[tunnel]`, `[server]` (listen, опциональный tun_subnet), `[client]` (remote, reconnect/heartbeat). Параметры TUN-подсети (tun_ip, tun_netmask, gateway) автоматизированы — сервер по умолчанию использует `10.0.0.0/24`, клиент получает IP автоматически. | P1 |
 | FR8 | Логирование уровня INFO/DEBUG в stdout/stderr с метками времени. | P1 |
 | FR9 | Транспорт туннеля — UDP (датаграммы с encrypted фреймами). Надёжность возлагается на внутренние протоколы (inner TCP), туннель не добавляет второй уровень retransmission. | P3 |
-| FR10 | Keepalive / heartbeat между клиентом и сервером для детекта разрыва TCP-соединения. | P1 |
+| FR10 | Keepalive / heartbeat между клиентом и сервером для детекта разрыва соединения. | P1 |
 | FR11 | Все инкапсулированные пакеты шифруются потоковым шифром XChaCha20-Poly1305 (каждый пакет — отдельный AEAD nonce). | P0 |
 | FR12 | Ключ шифрования — Pre-Shared Key (PSK) из конфига (hex/base64), 256 бит. | P0 |
 | FR13 | На старте клиент и сервер обмениваются эфемерными ключами через X25519 ECDH, подписанными PSK (hybrid key exchange). Для multi-client сервер назначает клиенту уникальный IP в handshake. | P1 |
@@ -90,7 +90,7 @@
 3. **Key Exchange** — X25519 ECDH поверх PSK, handshake при старте сессии.
 4. **Crypto Engine** — XChaCha20-Poly1305 Encrypt/Decrypt, nonce-счётчик.
 5. **Transport** — UDP-сокет (tokio UdpSocket), каждый encrypted фрейм — отдельная датаграмма. Handshake поверх UDP с retransmission.
-6. **Packet Protocol** — Encapsulator / Decapsulator (заголовок: длина, seq, flags).
+6. **Packet Protocol** — Encapsulator / Decapsulator (заголовок: nonce, seq, flags).
 7. **Signal Handler** — graceful shutdown.
 8. **Logger** — `tracing`, structured.
 
@@ -158,7 +158,7 @@
 
 1. Связь между клиентом и сервером теряется (heartbeat timeout / ICMP unreachable).
 2. Клиент детектит разрыв (отсутствие PONG в течение heartbeat_timeout).
-3. Пытается переподключиться (backoff: 1s, 2s, 4s, ... max 30s) с повторным handshake по UDP.
+3. Пытается переподключиться (backoff: 2s, 4s, 8s, ... max 30s) с повторным handshake по UDP.
 4. При успешном переподключении — поток возобновляется.
 5. Если reconnect исчерпан — graceful shutdown (восстановление маршрутов, удаление TUN).
 

@@ -351,12 +351,12 @@ cargo build --release
 
 ## Итоговый чеклист P3
 
-- [ ] P3.1: Protocol — encode/decode без length prefix
-- [ ] P3.2: Transport — UDP bind/connect
-- [ ] P3.3: Handshake — работает поверх UDP с retransmission
-- [ ] P3.4: Server — UDP data loop с recv_from/send_to
-- [ ] P3.5: Client — UDP data loop с recv/send
-- [ ] P3.6: Performance — видео стриминг без деградации
-- [ ] P3.7: Auto TUN — tun_ip/netmask/gateway убраны из конфига, сервер управляет подсетью
-- [ ] P3.8: Docker e2e — все три скрипта проходят (с обновлёнными конфигами)
-- [ ] P3.9: Tests — cargo test + clippy clean
+- [x] P3.1: Protocol — encode/decode без length prefix
+- [x] P3.2: Transport — UDP bind/connect
+- [x] P3.3: Handshake — работает поверх UDP с retransmission
+- [x] P3.4: Server — UDP data loop с recv_from/send_to
+- [x] P3.5: Client — UDP data loop с recv/send
+- [x] P3.6: Performance — видео стриминг без деградации
+- [x] P3.7: Auto TUN — tun_ip/netmask/gateway убраны из конфига, сервер управляет подсетью
+- [x] P3.8: Docker e2e — все три скрипта проходят (с обновлёнными конфигами)
+- [x] P3.9: Tests — cargo test + clippy clean
