@@ -179,7 +179,8 @@ cargo clippy -- -D warnings
 
 - [x] P4.1: IP Pool — allocate/release/reuse
 - [x] P4.2: Handshake — server_hello 69 байт, client_ip + netmask
-- [x] P4.3: Server — multi-client loop, демультиплексирование
+- [x] P4.3: Server — multi-client loop, демультиплексирование (channel-based dispatch)
 - [x] P4.4: Client — получает IP из handshake, создаёт TUN
-- [x] P4.5: Docker multiclient скрипт создан (tests/docker_multiclient.sh)
+- [x] P4.5: Docker — 2+ клиента одновременно, disconnect + IP reuse, 3 клиента (10/10)
 - [x] P4.6: Unit tests — 76 passed, clippy clean
+- [x] Docker e2e: 5/5, reconnect: 7/7, heartbeat: 13/14 (1 флаки)
