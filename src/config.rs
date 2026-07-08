@@ -160,19 +160,14 @@ fn validate_cidr(cidr: &str) -> Result<(), crate::error::Error> {
 
 pub fn parse_tun_subnet(subnet: Option<&str>) -> Result<(std::net::Ipv4Addr, u8), crate::error::Error> {
     let cidr = subnet.unwrap_or(DEFAULT_TUN_SUBNET);
-    let (ip_str, prefix_str) = cidr
+    let (_ip_str, prefix_str) = cidr
         .split_once('/')
         .ok_or_else(|| crate::error::Error::Config(format!("invalid subnet '{cidr}'")))?;
-    let server_ip: std::net::Ipv4Addr = ip_str.parse().map_err(|_| {
-        crate::error::Error::Config(format!("invalid subnet IP '{ip_str}'"))
-    })?;
-    if server_ip == std::net::Ipv4Addr::new(0, 0, 0, 0) {
-        return Ok((DEFAULT_SERVER_TUN_IP.parse().unwrap(), DEFAULT_TUN_NETMASK));
-    }
     let prefix: u8 = prefix_str.parse().map_err(|_| {
         crate::error::Error::Config(format!("invalid prefix '{prefix_str}'"))
     })?;
     validate_netmask(prefix)?;
+    let server_ip = crate::ip_pool::IpPool::server_ip(cidr)?;
     Ok((server_ip, prefix))
 }
 

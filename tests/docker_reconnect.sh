@@ -137,7 +137,7 @@ start_server ts-server-1 /tmp/ts-r1-server.toml
 wait_for_log ts-server-1 "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-client-1 /tmp/ts-r1-client.toml
-wait_for_log ts-client-1 "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-client-1 "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 
 step "Ping before kill" docker exec ts-client-1 ping -c 2 -W 3 10.0.0.1
 
@@ -156,7 +156,7 @@ echo "  Restarting server container..."
 docker start ts-server-1 > /dev/null
 wait_for_log ts-server-1 "[Ll]istening" 15 || { echo "FAIL: server restart"; exit 1; }
 
-step "Client resumed (Handshake complete)" wait_for_log ts-client-1 "resuming" 30
+step "Client resumed (Handshake complete)" wait_for_log ts-client-1 "Handshake complete" 30
 
 sleep 5
 step "Ping after reconnect" docker exec ts-client-1 ping -c 2 -W 5 10.0.0.1
@@ -199,7 +199,7 @@ start_server ts-server-2 /tmp/ts-r2-server.toml
 wait_for_log ts-server-2 "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-client-2 /tmp/ts-r2-client.toml
-wait_for_log ts-client-2 "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-client-2 "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 step "Initial connection" true
 
 # Kill server
@@ -255,7 +255,7 @@ start_server ts-server-3 /tmp/ts-r3-server.toml
 wait_for_log ts-server-3 "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-client-3 /tmp/ts-r3-client.toml
-wait_for_log ts-client-3 "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-client-3 "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 step "Initial connection" true
 
 # Kill server to trigger reconnect

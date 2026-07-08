@@ -265,7 +265,7 @@ async fn run_client_session(
         Ipv4Addr::from((network_u32 + 1).to_be_bytes())
     };
     crate::route::set_tun_route("ts0", gateway).await?;
-        tracing::info!(gateway = %client_ip, "Routes configured");
+        tracing::info!(gateway = %gateway, "Routes configured");
     }
 
     let crypto = Arc::new(Crypto::new(&session_key));

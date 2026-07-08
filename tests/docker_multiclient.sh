@@ -147,19 +147,19 @@ wait_for_log ts-mc1-client-a "Handshake complete" 15 || { echo "FAIL: client A c
 start_client ts-mc1-client-b /tmp/ts-mc1-client-b.toml
 wait_for_log ts-mc1-client-b "Handshake complete" 15 || { echo "FAIL: client B connect"; exit 1; }
 
-sleep 3
+sleep 5
 
-step "Client A ping server" docker exec ts-mc1-client-a ping -c 2 -W 3 10.0.0.1
+step "Client A ping server" docker exec ts-mc1-client-a ping -c 2 -W 5 10.0.0.1
 step "Client B ping server" docker exec ts-mc1-client-b ping -c 2 -W 3 10.0.0.1
 
 # Verify they got different IPs
-LOG_A=$(docker logs ts-mc1-server 2>&1)
+LOG_A=$(docker logs ts-mc1-server 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
 LOG_CLIENTS=$(echo "$LOG_A" | grep "Handshake complete" | grep "tun_ip")
 echo "  Server log handshake lines:"
 echo "$LOG_A" | grep "Handshake complete"
 
-IP_A=$(echo "$LOG_A" | grep "Handshake complete" | head -1 | grep -oP 'tun_ip = \K[0-9.]+')
-IP_B=$(echo "$LOG_A" | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip = \K[0-9.]+')
+IP_A=$(echo "$LOG_A" | grep "Handshake complete" | head -1 | grep -oP 'tun_ip=\K[0-9.]+')
+IP_B=$(echo "$LOG_A" | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip=\K[0-9.]+')
 
 step "Different client IPs" [ "$IP_A" != "$IP_B" ]
 
@@ -217,7 +217,7 @@ start_client ts-mc2-client-b /tmp/ts-mc2-client-b.toml
 wait_for_log ts-mc2-client-b "Handshake complete" 10 || { echo "FAIL: client B connect"; exit 1; }
 
 # Note assigned IP of client A
-IP_A=$(docker logs ts-mc2-server 2>&1 | grep "Handshake complete" | head -1 | grep -oP 'tun_ip = \K[0-9.]+')
+IP_A=$(docker logs ts-mc2-server 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "Handshake complete" | head -1 | grep -oP 'tun_ip=\K[0-9.]+')
 echo "  Client A IP: $IP_A"
 
 # Kill client A
@@ -243,7 +243,7 @@ EOF
 start_client ts-mc2-client-c /tmp/ts-mc2-client-c.toml
 wait_for_log ts-mc2-client-c "Handshake complete" 10 || { echo "FAIL: client C connect"; exit 1; }
 
-IP_C=$(docker logs ts-mc2-server 2>&1 | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip = \K[0-9.]+')
+IP_C=$(docker logs ts-mc2-server 2>&1 | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip=\K[0-9.]+')
 echo "  Client C IP: $IP_C ($([ "$IP_C" = "$IP_A" ] && echo 'reused' || echo 'new'))"
 
 step "Client C reused client A IP" [ "$IP_C" = "$IP_A" ]

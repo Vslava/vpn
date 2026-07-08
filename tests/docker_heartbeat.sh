@@ -132,7 +132,7 @@ start_server ts-hb1-server /tmp/ts-hb1-server.toml
 wait_for_log ts-hb1-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb1-client /tmp/ts-hb1-client.toml
-wait_for_log ts-hb1-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-hb1-client "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 
 step "Ping before idle" docker exec ts-hb1-client ping -c 2 -W 3 10.0.0.1
 
@@ -142,7 +142,7 @@ sleep 25
 
 # Client should still be alive (PONG responses prevented timeout)
 # If heartbeat timeout fired, client would start reconnecting
-step "Client still connected (no reconnect)" sh -c 'docker logs ts-hb1-client 2>&1 | grep -c "resuming" | grep -q "^1$"'
+step "Client still connected (no reconnect)" sh -c 'docker logs ts-hb1-client 2>&1 | grep -c "Handshake complete" | grep -q "^1$"'
 
 # Traffic should still work — PING kept connection alive
 step "Ping after PING/PONG cycles" docker exec ts-hb1-client ping -c 2 -W 3 10.0.0.1
@@ -193,7 +193,7 @@ start_server ts-hb2-server /tmp/ts-hb2-server.toml
 wait_for_log ts-hb2-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb2-client /tmp/ts-hb2-client.toml
-wait_for_log ts-hb2-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-hb2-client "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 
 step "Ping before freeze" docker exec ts-hb2-client ping -c 2 -W 3 10.0.0.1
 
@@ -214,7 +214,7 @@ echo "  Server unpaused..."
 
 # Client should reconnect (run_client_full handles the timeout error)
 step "Client reconnecting" sh -c 'docker logs ts-hb2-client 2>&1 | grep -q "Reconnecting"'
-step "Client reconnected" wait_for_log ts-hb2-client "resuming" 30
+step "Client reconnected" wait_for_log ts-hb2-client "Handshake complete" 30
 
 # Wait for routes/TUN to settle after reconnect
 sleep 10
@@ -260,7 +260,7 @@ start_server ts-hb3-server /tmp/ts-hb3-server.toml
 wait_for_log ts-hb3-server "[Ll]istening" 10 || { echo "FAIL: server start"; exit 1; }
 
 start_client ts-hb3-client /tmp/ts-hb3-client.toml
-wait_for_log ts-hb3-client "resuming" 15 || { echo "FAIL: client connect"; exit 1; }
+wait_for_log ts-hb3-client "Handshake complete" 15 || { echo "FAIL: client connect"; exit 1; }
 
 # Continuous ping via TUN — forces bidirectional traffic
 docker exec -d ts-hb3-client ping -i 0.5 10.0.0.1 > /dev/null 2>&1
@@ -274,7 +274,7 @@ echo "  Waiting 20s with active traffic..."
 sleep 20
 
 # Connection should remain alive — continuous traffic resets heartbeat timer
-step "Client still connected after active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -c "resuming" | grep -q "^1$"'
+step "Client still connected after active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -c "Handshake complete" | grep -q "^1$"'
 step "No reconnection during active traffic" sh -c 'docker logs ts-hb3-client 2>&1 | grep -qc "Reconnecting" && false || true'
 
 # Verify traffic still works
