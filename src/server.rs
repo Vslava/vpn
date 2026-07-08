@@ -217,16 +217,10 @@ fn extract_dest_ipv4(buf: &[u8]) -> Option<Ipv4Addr> {
         return None;
     }
     let ihl = (version_ihl & 0x0F) as usize;
-    if buf.len() < ihl + 8 {
+    if buf.len() < ihl * 4 {
         return None;
     }
-    let dest_offset = ihl + 4;
-    Some(Ipv4Addr::new(
-        buf[dest_offset],
-        buf[dest_offset + 1],
-        buf[dest_offset + 2],
-        buf[dest_offset + 3],
-    ))
+    Some(Ipv4Addr::new(buf[16], buf[17], buf[18], buf[19]))
 }
 
 async fn encrypt_and_send(
