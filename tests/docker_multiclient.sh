@@ -222,9 +222,10 @@ echo "  Client A IP: $IP_A"
 
 # Kill client A
 docker exec ts-mc2-client-a sh -c 'pkill -TERM -f traffic-sentinel' 2>/dev/null || true
-sleep 3
+echo "  Waiting for server to detect disconnect (~35s)..."
+sleep 35
 
-step "Client A disconnected" sh -c 'docker logs ts-mc2-server 2>&1 | grep -q "Client disconnected"'
+step "Client A disconnected" sh -c 'docker logs ts-mc2-server 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -q "Client disconnected"'
 step "Client B still connected" docker exec ts-mc2-client-b ping -c 2 -W 3 10.0.0.1
 
 # Start client C with same config — should get Client A's old IP
@@ -243,7 +244,7 @@ EOF
 start_client ts-mc2-client-c /tmp/ts-mc2-client-c.toml
 wait_for_log ts-mc2-client-c "Handshake complete" 10 || { echo "FAIL: client C connect"; exit 1; }
 
-IP_C=$(docker logs ts-mc2-server 2>&1 | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip=\K[0-9.]+')
+IP_C=$(docker logs ts-mc2-server 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep "Handshake complete" | tail -1 | grep -oP 'tun_ip=\K[0-9.]+')
 echo "  Client C IP: $IP_C ($([ "$IP_C" = "$IP_A" ] && echo 'reused' || echo 'new'))"
 
 step "Client C reused client A IP" [ "$IP_C" = "$IP_A" ]

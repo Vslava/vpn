@@ -16,7 +16,7 @@ use crate::ip_pool::IpPool;
 use crate::protocol::{self, Frame, FLAG_PONG};
 use crate::tun::TunDevice;
 
-const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct ClientSession {
     crypto: Arc<Crypto>,
