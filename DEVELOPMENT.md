@@ -7,7 +7,7 @@ P2 (Production Ready) завершён. Текущий этап — P4 (Multi-cl
 ## Тестирование
 
 ```bash
-cargo test --lib          # unit-тесты (71 тест)
+cargo test --lib          # unit-тесты (76 тестов)
 cargo test --tests        # интеграционные тесты (без sudo некоторые ignored)
 cargo clippy --all        # lint
 cargo llvm-cov --all      # покрытие (требуется cargo-llvm-cov)

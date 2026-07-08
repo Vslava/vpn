@@ -4,6 +4,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod handshake;
+pub mod ip_pool;
 pub mod nat;
 pub mod protocol;
 pub mod route;

@@ -1,12 +1,18 @@
 use std::net::SocketAddr;
+use std::sync::Mutex;
 
 use rand::RngCore;
+use traffic_sentinel::ip_pool::IpPool;
 use traffic_sentinel::transport::{udp_bind, udp_connect};
 
 fn random_psk() -> [u8; 32] {
     let mut psk = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut psk);
     psk
+}
+
+fn setup_pool() -> Mutex<IpPool> {
+    Mutex::new(IpPool::new("10.0.0.0/24").unwrap())
 }
 
 #[tokio::test]
@@ -16,17 +22,18 @@ async fn test_handshake_over_real_udp() {
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();
+    let pool = setup_pool();
 
     let server_handle = tokio::spawn(async move {
-        let (key, _client_addr) =
-            traffic_sentinel::handshake::server_handshake(&server, &psk)
+        let (key, _client_addr, _ip, _nm) =
+            traffic_sentinel::handshake::server_handshake(&server, &psk, &pool)
                 .await
                 .unwrap();
         key
     });
 
     let client = udp_connect(addr).await.unwrap();
-    let client_key = traffic_sentinel::handshake::client_handshake(&client, &psk)
+    let (client_key, _ip, _nm) = traffic_sentinel::handshake::client_handshake(&client, &psk)
         .await
         .unwrap();
 
@@ -42,9 +49,10 @@ async fn test_handshake_udp_wrong_psk() {
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();
+    let pool = setup_pool();
 
     let server_handle = tokio::spawn(async move {
-        let result = traffic_sentinel::handshake::server_handshake(&server, &server_psk).await;
+        let result = traffic_sentinel::handshake::server_handshake(&server, &server_psk, &pool).await;
         result
     });
 

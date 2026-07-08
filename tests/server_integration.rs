@@ -2,9 +2,11 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 use traffic_sentinel::crypto::Crypto;
+use traffic_sentinel::ip_pool::IpPool;
 use traffic_sentinel::protocol::{self, Frame};
 use traffic_sentinel::tun;
 
@@ -31,31 +33,30 @@ async fn test_server_forwarding_pipeline() {
     .expect("bind failed");
     let addr = server_socket.local_addr().unwrap();
 
-    let (hs_tx, hs_rx) =
-        tokio::sync::oneshot::channel::<Result<([u8; 32], std::net::SocketAddr), traffic_sentinel::error::Error>>();
+    let ip_pool = Mutex::new(IpPool::new("10.0.0.0/24").unwrap());
 
-    // Spawn server handshake (it waits for client)
+    let (hs_tx, hs_rx) =
+        tokio::sync::oneshot::channel::<Result<([u8; 32], std::net::SocketAddr, Ipv4Addr, u8), traffic_sentinel::error::Error>>();
+
     let server_hs = tokio::spawn(async move {
         let result =
-            traffic_sentinel::handshake::server_handshake(&server_socket, &psk).await;
+            traffic_sentinel::handshake::server_handshake(&server_socket, &psk, &ip_pool).await;
         hs_tx.send(result).ok();
         server_socket
     });
 
-    // Client connects via UDP and does handshake
     let client = traffic_sentinel::transport::udp_connect(addr)
         .await
         .expect("client connect failed");
-    let client_key =
+    let (client_key, client_ip, _netmask) =
         traffic_sentinel::handshake::client_handshake(&client, &psk)
             .await
             .expect("client handshake failed");
-    eprintln!("client: handshake complete");
+    eprintln!("client: handshake complete, assigned IP {client_ip}");
 
-    // Get server handshake result
     let hs_result = hs_rx.await.expect("handshake channel dropped");
-    let (session_key, client_addr) = hs_result.expect("server handshake failed");
-    eprintln!("server: handshake complete with {}", client_addr);
+    let (session_key, client_addr, _assigned_ip, _nm) = hs_result.expect("server handshake failed");
+    eprintln!("server: handshake complete with {client_addr}");
     assert_eq!(client_key, session_key);
 
     let server_socket = server_hs.await.expect("server hs task");
@@ -65,7 +66,6 @@ async fn test_server_forwarding_pipeline() {
     let seq = Arc::new(AtomicU32::new(0));
     let cancel = CancellationToken::new();
 
-    // Spawn handle_client in background
     let cancel_clone = cancel.clone();
     let server_handle = tokio::spawn(async move {
         traffic_sentinel::server::handle_client(
@@ -74,6 +74,7 @@ async fn test_server_forwarding_pipeline() {
             client_addr,
             crypto,
             seq,
+            client_ip,
             cancel_clone,
         )
         .await
@@ -97,13 +98,12 @@ async fn test_server_forwarding_pipeline() {
         encoded.len()
     );
 
-    // Wait for echo response (server reads from TUN, re-encrypts, sends back)
     let mut recv_buf = vec![0u8; 2000];
     let n = tokio::time::timeout(std::time::Duration::from_secs(5), client.recv(&mut recv_buf))
         .await
         .expect("timeout waiting for response")
         .expect("client recv failed");
-    eprintln!("client: received response ({} bytes)", n);
+    eprintln!("client: received response ({n} bytes)");
 
     let resp_frame =
         protocol::decode(&recv_buf[..n]).expect("decode response failed");

@@ -5,7 +5,7 @@ async fn test_save_default_route() {
     let route = traffic_sentinel::route::save_default_route()
         .await
         .expect("save_default_route failed");
-    eprintln!("Default route: {:?}", route);
+    eprintln!("Default route: {route:?}");
     assert!(route.is_some(), "expected a default route to exist");
     let r = route.unwrap();
     assert_ne!(r.gateway, Ipv4Addr::UNSPECIFIED, "gateway should not be 0.0.0.0");

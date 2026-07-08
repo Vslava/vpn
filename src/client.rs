@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
@@ -5,13 +6,12 @@ use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{DEFAULT_CLIENT_TUN_IP, DEFAULT_GATEWAY, DEFAULT_TUN_NETMASK};
+use crate::config;
 use crate::crypto::Crypto;
 use crate::error::Error;
 use crate::protocol::{self, Frame, FLAG_DATA, FLAG_PING};
 use crate::tun::TunDevice;
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run_client(
     tun: Arc<TunDevice>,
     socket: UdpSocket,
@@ -110,7 +110,6 @@ pub async fn run_client(
     let seq_hb = seq.clone();
     let ping_tx_hb = ping_tx.clone();
     let mut hb = tokio::spawn(async move {
-        // PING interval: send PING only when idle
         let mut interval = tokio::time::interval(hb_interval);
         interval.tick().await;
 
@@ -221,10 +220,13 @@ pub async fn run_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_client_session(
     remote: std::net::SocketAddr,
     psk: &[u8; 32],
-    tun: Arc<TunDevice>,
+    mtu: u16,
+    server_ip: Ipv4Addr,
+    saved_route: &Option<crate::route::DefaultRoute>,
     cancel: CancellationToken,
     heartbeat_interval: Option<u64>,
     heartbeat_timeout: Option<u64>,
@@ -236,19 +238,35 @@ async fn run_client_session(
     };
     tracing::info!(remote = %remote, "Connected");
 
-    let session_key = tokio::select! {
+    let (session_key, client_ip, netmask) = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(()),
         result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             crate::handshake::client_handshake(&socket, psk),
         ) => match result {
-            Ok(Ok(k)) => k,
+            Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err(Error::Timeout("handshake timeout".into())),
         },
     };
-    tracing::info!("Handshake complete, resuming");
+    tracing::info!(assigned_ip = %client_ip, netmask = netmask, "Handshake complete");
+
+    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, client_ip, netmask).await?);
+    tracing::info!(iface = "ts0", ip = %client_ip, netmask = netmask, "Created TUN interface");
+
+    if let Some(ref route) = saved_route {
+        crate::route::add_exclude_route(server_ip, route).await?;
+        let gateway = {
+        let netmask_addr = config::netmask_from_prefix(netmask);
+        let client_u32 = u32::from(client_ip);
+        let netmask_u32 = u32::from(netmask_addr);
+        let network_u32 = client_u32 & netmask_u32;
+        Ipv4Addr::from((network_u32 + 1).to_be_bytes())
+    };
+    crate::route::set_tun_route("ts0", gateway).await?;
+        tracing::info!(gateway = %client_ip, "Routes configured");
+    }
 
     let crypto = Arc::new(Crypto::new(&session_key));
     run_client(tun, socket, crypto, cancel, heartbeat_interval, heartbeat_timeout).await
@@ -268,23 +286,13 @@ pub async fn run_client_full(
     heartbeat_interval: Option<u64>,
     heartbeat_timeout: Option<u64>,
 ) -> Result<(), Error> {
-    let tun_ip: std::net::Ipv4Addr = DEFAULT_CLIENT_TUN_IP.parse().unwrap();
-    let netmask = DEFAULT_TUN_NETMASK;
-    let gateway: std::net::Ipv4Addr = DEFAULT_GATEWAY.parse().unwrap();    let tun = Arc::new(crate::tun::create_tun("ts0", mtu, tun_ip, netmask).await?);
-    tracing::info!(iface = "ts0", ip = %tun_ip, netmask = netmask, "Created TUN interface");
-
     let saved_route = crate::route::save_default_route().await?;
     tracing::info!(?saved_route, "Saved default route");
 
-    if let Some(ref route) = saved_route {
-        let server_ip = match remote.ip() {
-            std::net::IpAddr::V4(ip) => ip,
-            std::net::IpAddr::V6(_) => return Err(Error::Config("IPv6 not supported".into())),
-        };
-        crate::route::add_exclude_route(server_ip, route).await?;
-        crate::route::set_tun_route("ts0", gateway).await?;
-        tracing::info!(gateway = %gateway, "Routes configured");
-    }
+    let server_ip = match remote.ip() {
+        std::net::IpAddr::V4(ip) => ip,
+        std::net::IpAddr::V6(_) => return Err(Error::Config("IPv6 not supported".into())),
+    };
 
     let cancel = CancellationToken::new();
     let sig_cancel = cancel.clone();
@@ -299,7 +307,9 @@ pub async fn run_client_full(
         let result = run_client_session(
             remote,
             psk,
-            tun.clone(),
+            mtu,
+            server_ip,
+            &saved_route,
             cancel.clone(),
             heartbeat_interval,
             heartbeat_timeout,
@@ -347,9 +357,6 @@ pub async fn run_client_full(
             tracing::error!(error = %e, "Failed to restore route");
         }
     }
-
-    tracing::info!("Deleting TUN");
-    drop(tun);
 
     tracing::info!("Shutdown complete");
 

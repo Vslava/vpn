@@ -1,4 +1,5 @@
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
@@ -8,6 +9,7 @@ use tokio::net::UdpSocket;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::error::Error;
+use crate::ip_pool::IpPool;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -15,6 +17,7 @@ const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const HANDSHAKE_RETRY_INTERVAL: Duration = Duration::from_secs(3);
 const HANDSHAKE_MAX_RETRIES: usize = 5;
 const HANDSHAKE_MSG_SIZE: usize = 64;
+const SERVER_HELLO_SIZE: usize = 69;
 
 fn hmac_sha256(key: &[u8; 32], data: &[u8; 32]) -> Result<[u8; 32], Error> {
     let mut mac =
@@ -64,29 +67,38 @@ fn parse_and_verify_handshake_msg(msg: &[u8; 64], psk: &[u8; 32]) -> Result<[u8;
     Ok(pub_bytes)
 }
 
-pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<[u8; 32], Error> {
+pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], Ipv4Addr, u8), Error> {
     let client_secret = EphemeralSecret::random_from_rng(OsRng);
     let (client_hello, client_pub_bytes) = build_handshake_msg(psk, &client_secret)?;
 
-    let mut recv_buf = [0u8; HANDSHAKE_MSG_SIZE];
+    let mut recv_buf = [0u8; SERVER_HELLO_SIZE];
 
     for attempt in 0..HANDSHAKE_MAX_RETRIES {
         socket.send(&client_hello).await?;
 
         match tokio::time::timeout(HANDSHAKE_RETRY_INTERVAL, socket.recv(&mut recv_buf)).await {
-            Ok(Ok(n)) if n == HANDSHAKE_MSG_SIZE => {
-                let server_pub_bytes = parse_and_verify_handshake_msg(&recv_buf, psk)?;
+            Ok(Ok(n)) if n == SERVER_HELLO_SIZE => {
+                let mut hmac_msg = [0u8; 64];
+                hmac_msg.copy_from_slice(&recv_buf[..64]);
+                let server_pub_bytes = parse_and_verify_handshake_msg(&hmac_msg, psk)?;
 
                 let server_pub = PublicKey::from(server_pub_bytes);
                 let shared_secret = client_secret.diffie_hellman(&server_pub);
                 let shared_bytes = shared_secret.to_bytes();
 
-                return Ok(derive_session_key(
+                let session_key = derive_session_key(
                     psk,
                     &shared_bytes,
                     &client_pub_bytes,
                     &server_pub_bytes,
-                ));
+                );
+
+                let client_ip = Ipv4Addr::new(
+                    recv_buf[64], recv_buf[65], recv_buf[66], recv_buf[67],
+                );
+                let netmask = recv_buf[68];
+
+                return Ok((session_key, client_ip, netmask));
             }
             Ok(Ok(_)) => {
                 continue;
@@ -106,7 +118,11 @@ pub async fn client_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<[u8;
     Err(Error::Handshake("no response from server".into()))
 }
 
-pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8; 32], SocketAddr), Error> {
+pub async fn server_handshake(
+    socket: &UdpSocket,
+    psk: &[u8; 32],
+    ip_pool: &Mutex<IpPool>,
+) -> Result<([u8; 32], SocketAddr, Ipv4Addr, u8), Error> {
     loop {
         let mut buf = [0u8; HANDSHAKE_MSG_SIZE];
 
@@ -126,14 +142,31 @@ pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8
             Err(_) => continue,
         };
 
+        let client_ip = {
+            let mut pool = ip_pool
+                .lock()
+                .map_err(|_| Error::Handshake("ip pool lock poisoned".into()))?;
+            pool.allocate()
+                .ok_or_else(|| Error::Handshake("no available client IPs in pool".into()))?
+        };
+
+        let netmask: u8 = {
+            let pool = ip_pool
+                .lock()
+                .map_err(|_| Error::Handshake("ip pool lock poisoned".into()))?;
+            pool.netmask()
+        };
+
         let server_secret = EphemeralSecret::random_from_rng(OsRng);
         let server_pub = PublicKey::from(&server_secret);
         let server_pub_bytes = server_pub.to_bytes();
 
         let server_hmac = hmac_sha256(psk, &server_pub_bytes)?;
-        let mut response = [0u8; HANDSHAKE_MSG_SIZE];
+        let mut response = [0u8; SERVER_HELLO_SIZE];
         response[..32].copy_from_slice(&server_pub_bytes);
-        response[32..].copy_from_slice(&server_hmac);
+        response[32..64].copy_from_slice(&server_hmac);
+        response[64..68].copy_from_slice(&client_ip.octets());
+        response[68] = netmask;
 
         socket.send_to(&response, client_addr).await?;
 
@@ -148,7 +181,7 @@ pub async fn server_handshake(socket: &UdpSocket, psk: &[u8; 32]) -> Result<([u8
             &server_pub_bytes,
         );
 
-        return Ok((session_key, client_addr));
+        return Ok((session_key, client_addr, client_ip, netmask));
     }
 }
 
@@ -164,6 +197,10 @@ mod tests {
         psk
     }
 
+    fn setup_pool() -> Mutex<IpPool> {
+        Mutex::new(IpPool::new("10.0.0.0/24").unwrap())
+    }
+
     async fn setup_udp_pair() -> (UdpSocket, UdpSocket, SocketAddr) {
         let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let server_addr = server.local_addr().unwrap();
@@ -175,15 +212,18 @@ mod tests {
     async fn test_client_server_handshake_matching_keys() {
         let psk = random_psk();
         let (client, server, _) = setup_udp_pair().await;
+        let pool = setup_pool();
 
         let (client_result, server_result) = tokio::join!(
             client_handshake(&client, &psk),
-            server_handshake(&server, &psk),
+            server_handshake(&server, &psk, &pool),
         );
 
-        let client_key = client_result.unwrap();
-        let (server_key, _client_addr) = server_result.unwrap();
+        let (client_key, client_ip, _nm) = client_result.unwrap();
+        let (server_key, _client_addr, server_ip, _nm) = server_result.unwrap();
         assert_eq!(client_key, server_key);
+        assert_eq!(client_ip, server_ip);
+        assert_eq!(client_ip, Ipv4Addr::new(10, 0, 0, 2));
     }
 
     #[test]
@@ -261,10 +301,11 @@ mod tests {
         let client_psk = [0xABu8; 32];
         let server_psk = [0xBAu8; 32];
         let (client, server, _) = setup_udp_pair().await;
+        let pool = setup_pool();
 
         let (client_result, server_result) = tokio::join!(
             client_handshake(&client, &client_psk),
-            server_handshake(&server, &server_psk),
+            server_handshake(&server, &server_psk, &pool),
         );
 
         assert!(client_result.is_err());
@@ -278,14 +319,15 @@ mod tests {
 
         for _ in 0..20 {
             let (client, server, _) = setup_udp_pair().await;
+            let pool = setup_pool();
 
             let (client_result, server_result) = tokio::join!(
                 client_handshake(&client, &psk),
-                server_handshake(&server, &psk),
+                server_handshake(&server, &psk, &pool),
             );
 
-            let key = client_result.unwrap();
-            let (server_key, _) = server_result.unwrap();
+            let (key, _, _) = client_result.unwrap();
+            let (server_key, _, _, _) = server_result.unwrap();
             assert_eq!(key, server_key);
             assert!(keys.insert(key), "duplicate session key (no PFS)");
         }
@@ -295,14 +337,15 @@ mod tests {
     async fn test_psk_all_zeros() {
         let psk = [0u8; 32];
         let (client, server, _) = setup_udp_pair().await;
+        let pool = setup_pool();
 
-        let (client_key, server_key) = tokio::join!(
+        let (client_result, server_result) = tokio::join!(
             client_handshake(&client, &psk),
-            server_handshake(&server, &psk),
+            server_handshake(&server, &psk, &pool),
         );
 
-        let client_key = client_key.unwrap();
-        let (server_key, _) = server_key.unwrap();
+        let (client_key, _, _) = client_result.unwrap();
+        let (server_key, _, _, _) = server_result.unwrap();
         assert_eq!(client_key, server_key);
     }
 
@@ -310,14 +353,15 @@ mod tests {
     async fn test_psk_all_ff() {
         let psk = [0xFFu8; 32];
         let (client, server, _) = setup_udp_pair().await;
+        let pool = setup_pool();
 
-        let (client_key, server_key) = tokio::join!(
+        let (client_result, server_result) = tokio::join!(
             client_handshake(&client, &psk),
-            server_handshake(&server, &psk),
+            server_handshake(&server, &psk, &pool),
         );
 
-        let client_key = client_key.unwrap();
-        let (server_key, _) = server_key.unwrap();
+        let (client_key, _, _) = client_result.unwrap();
+        let (server_key, _, _, _) = server_result.unwrap();
         assert_eq!(client_key, server_key);
     }
 
@@ -341,6 +385,7 @@ mod tests {
     async fn test_tampered_server_hello() {
         let psk = random_psk();
         let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
+        let pool = setup_pool();
 
         let client_handle = tokio::spawn(async move {
             client_handshake(&client, &psk).await
@@ -353,15 +398,15 @@ mod tests {
 
             proxy_to_server.send(&buf[..n]).await.unwrap();
 
-            let mut srv_buf = [0u8; 64];
+            let mut srv_buf = [0u8; SERVER_HELLO_SIZE];
             let n = proxy_to_server.recv(&mut srv_buf).await.unwrap();
-            assert_eq!(n, 64);
+            assert_eq!(n, SERVER_HELLO_SIZE);
             srv_buf[63] ^= 0xFF;
             proxy_to_client.send_to(&srv_buf[..n], client_addr).await.unwrap();
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&server, &psk).await
+            server_handshake(&server, &psk, &pool).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
@@ -374,6 +419,7 @@ mod tests {
     async fn test_tampered_client_hello() {
         let psk = random_psk();
         let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
+        let pool = setup_pool();
 
         let client_handle = tokio::spawn(async move {
             client_handshake(&client, &psk).await
@@ -387,9 +433,7 @@ mod tests {
 
             proxy_to_server.send(&buf[..n]).await.unwrap();
 
-            // Server rejected the tampered hello, no response expected.
-            // Wait briefly to confirm no response, then let both sides time out.
-            let mut srv_buf = [0u8; 64];
+            let mut srv_buf = [0u8; SERVER_HELLO_SIZE];
             let result = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 proxy_to_server.recv(&mut srv_buf),
@@ -399,7 +443,7 @@ mod tests {
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&server, &psk).await
+            server_handshake(&server, &psk, &pool).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
@@ -412,6 +456,7 @@ mod tests {
     async fn test_tampered_public_key() {
         let psk = random_psk();
         let (client, proxy_to_client, proxy_to_server, server) = setup_proxy_pair().await;
+        let pool = setup_pool();
 
         let client_handle = tokio::spawn(async move {
             client_handshake(&client, &psk).await
@@ -424,15 +469,15 @@ mod tests {
 
             proxy_to_server.send(&buf[..n]).await.unwrap();
 
-            let mut srv_buf = [0u8; 64];
+            let mut srv_buf = [0u8; SERVER_HELLO_SIZE];
             let n = proxy_to_server.recv(&mut srv_buf).await.unwrap();
-            assert_eq!(n, 64);
+            assert_eq!(n, SERVER_HELLO_SIZE);
             srv_buf[0] ^= 1;
             proxy_to_client.send_to(&srv_buf[..n], _client_addr).await.unwrap();
         });
 
         let server_handle = tokio::spawn(async move {
-            server_handshake(&server, &psk).await
+            server_handshake(&server, &psk, &pool).await
         });
 
         let (client_result, server_result, _) = tokio::join!(client_handle, server_handle, proxy_handle);
@@ -445,7 +490,8 @@ mod tests {
     async fn test_server_handshake_timeout() {
         let server = udp_bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let psk = random_psk();
-        let result = server_handshake(&server, &psk).await;
+        let pool = setup_pool();
+        let result = server_handshake(&server, &psk, &pool).await;
         assert!(result.is_err());
     }
 }

@@ -124,7 +124,7 @@ mod tests {
             let plaintext = vec![0x42u8; *size];
             let ciphertext = crypto.encrypt(&nonce, &plaintext).unwrap();
             let decrypted = crypto.decrypt(&nonce, &ciphertext).unwrap();
-            assert_eq!(decrypted, plaintext, "size {} failed", size);
+            assert_eq!(decrypted, plaintext, "size {size} failed");
         }
     }
 }
