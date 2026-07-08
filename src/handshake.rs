@@ -185,6 +185,47 @@ pub async fn server_handshake(
     }
 }
 
+pub async fn server_handshake_dispatch(
+    socket: &UdpSocket,
+    psk: &[u8; 32],
+    ip_pool: &Mutex<IpPool>,
+    client_hello: &[u8; 64],
+    client_addr: SocketAddr,
+) -> Result<([u8; 32], SocketAddr, Ipv4Addr, u8), Error> {
+    let client_pub_bytes = parse_and_verify_handshake_msg(client_hello, psk)?;
+
+    let client_ip = {
+        let mut pool = ip_pool.lock().map_err(|_| Error::Handshake("ip pool lock poisoned".into()))?;
+        pool.allocate().ok_or_else(|| Error::Handshake("no available client IPs in pool".into()))?
+    };
+
+    let netmask = {
+        let pool = ip_pool.lock().map_err(|_| Error::Handshake("ip pool lock poisoned".into()))?;
+        pool.netmask()
+    };
+
+    let server_secret = EphemeralSecret::random_from_rng(OsRng);
+    let server_pub = PublicKey::from(&server_secret);
+    let server_pub_bytes = server_pub.to_bytes();
+
+    let server_hmac = hmac_sha256(psk, &server_pub_bytes)?;
+    let mut response = [0u8; SERVER_HELLO_SIZE];
+    response[..32].copy_from_slice(&server_pub_bytes);
+    response[32..64].copy_from_slice(&server_hmac);
+    response[64..68].copy_from_slice(&client_ip.octets());
+    response[68] = netmask;
+
+    socket.send_to(&response, client_addr).await?;
+
+    let client_pub = PublicKey::from(client_pub_bytes);
+    let shared_secret = server_secret.diffie_hellman(&client_pub);
+    let shared_bytes = shared_secret.to_bytes();
+
+    let session_key = derive_session_key(psk, &shared_bytes, &client_pub_bytes, &server_pub_bytes);
+
+    Ok((session_key, client_addr, client_ip, netmask))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

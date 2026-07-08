@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
@@ -38,17 +39,11 @@ pub async fn run_server(
 
     let ip_pool = Arc::new(Mutex::new(IpPool::new(subnet_cidr)?));
 
-    let ext_iface = crate::route::save_default_route()
-        .await
-        .ok()
-        .flatten()
-        .map(|r| r.ifname);
-
+    let ext_iface = crate::route::save_default_route().await.ok().flatten().map(|r| r.ifname);
     if let Some(ref iface) = ext_iface {
         crate::nat::setup_nat(iface).await?;
     } else {
-        tracing::warn!("No default route found; skipping NAT setup. \
-            Return traffic from the internet may not reach the tunnel.");
+        tracing::warn!("No default route found; skipping NAT setup.");
     }
 
     let socket = Arc::new(crate::transport::udp_bind(addr).await?);
@@ -63,86 +58,76 @@ pub async fn run_server(
     });
 
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let tx_map: Arc<Mutex<HashMap<std::net::SocketAddr, mpsc::Sender<Vec<u8>>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    let shared_tun = tun.clone();
-    let shared_socket = socket.clone();
-    let shared_sessions = sessions.clone();
-    let shared_cancel = cancel.clone();
     let tun_reader = tokio::spawn(tun_to_clients_loop(
-        shared_tun,
-        shared_socket,
-        shared_sessions,
-        shared_cancel,
+        tun.clone(), socket.clone(), sessions.clone(), cancel.clone(),
     ));
 
     loop {
-        if cancel.is_cancelled() {
-            break;
-        }
+        if cancel.is_cancelled() { break; }
 
-        let hs_socket = socket.clone();
-        let (session_key, client_addr, client_ip, _netmask) = match crate::handshake::server_handshake(
-            &hs_socket, psk, &ip_pool,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!(error = %e, "Handshake failed, retrying");
-                continue;
-            }
+        let mut buf = vec![0u8; 65535];
+        let (n, peer) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            result = socket.recv_from(&mut buf) => result.map_err(Error::Io)?,
         };
 
-        tracing::info!(peer = %client_addr, tun_ip = %client_ip, "Handshake complete");
+        let known_ip = sessions.lock().unwrap()
+            .iter().find(|(_, s)| s.client_addr == peer).map(|(ip, _)| *ip);
 
-        let crypto = Arc::new(Crypto::new(&session_key));
-        let seq = Arc::new(AtomicU32::new(0));
-
-        {
-            let mut map = sessions.lock().unwrap();
-            map.insert(
-                client_ip,
-                ClientSession {
-                    crypto: crypto.clone(),
-                    seq: seq.clone(),
-                    client_addr,
-                },
-            );
+        if let Some(_ip) = known_ip {
+            let sender = {
+                tx_map.lock().unwrap().get(&peer).cloned()
+            };
+            if let Some(tx) = sender {
+                let _ = tx.send(buf[..n].to_vec()).await;
+            }
+            continue;
         }
 
-        let client_cancel = cancel.clone();
-        let client_tun = tun.clone();
-        let client_sessions = sessions.clone();
-        let client_ip_pool = ip_pool.clone();
-        let spawn_socket = socket.clone();
+        if n == 64 {
+            let mut hs_buf = [0u8; 64];
+            hs_buf.copy_from_slice(&buf[..64]);
 
-        tokio::spawn(async move {
-            let result = handle_client(
-                spawn_socket,
-                client_tun,
-                client_addr,
-                crypto,
-                seq,
-                client_ip,
-                client_cancel.clone(),
-            )
-            .await;
+            let result = crate::handshake::server_handshake_dispatch(&socket, psk, &ip_pool, &hs_buf, peer).await;
+            let (session_key, client_addr, client_ip, _netmask) = match result {
+                Ok(r) => r,
+                Err(e) => { tracing::debug!(error = %e, "Handshake failed"); continue; }
+            };
 
-            {
-                let mut map = client_sessions.lock().unwrap();
-                map.remove(&client_ip);
-            }
-            {
-                let mut pool = client_ip_pool.lock().unwrap();
-                pool.release(client_ip);
-            }
+            tracing::info!(peer = %client_addr, tun_ip = %client_ip, "Handshake complete");
 
-            if let Err(ref e) = result {
-                tracing::error!(client = %client_ip, error = %e, "Client error");
-            }
+            let crypto = Arc::new(Crypto::new(&session_key));
+            let seq = Arc::new(AtomicU32::new(0));
+            let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
 
-            tracing::info!(client = %client_ip, "Client disconnected");
-        });
+            sessions.lock().unwrap().insert(client_ip, ClientSession {
+                crypto: crypto.clone(), seq: seq.clone(), client_addr,
+            });
+            tx_map.lock().unwrap().insert(client_addr, tx);
+
+            let cl_tun = tun.clone();
+            let cl_socket = socket.clone();
+            let cl_crypto = crypto.clone();
+            let cl_seq = seq.clone();
+            let cl_cancel = cancel.clone();
+            let cl_ip_pool = ip_pool.clone();
+            let cl_sessions = sessions.clone();
+            let cl_tx_map = tx_map.clone();
+            let cl_ip = client_ip;
+            let cl_peer = client_addr;
+
+            tokio::spawn(async move {
+                let r = handle_client(cl_tun, cl_socket, cl_peer, cl_crypto, cl_seq, rx, cl_cancel.clone()).await;
+                cl_sessions.lock().unwrap().remove(&cl_ip);
+                cl_tx_map.lock().unwrap().remove(&cl_peer);
+                cl_ip_pool.lock().unwrap().release(cl_ip);
+                if let Err(ref e) = r { tracing::error!(client = %cl_ip, error = %e, "Client error"); }
+                tracing::info!(client = %cl_ip, "Client disconnected");
+            });
+        }
     }
 
     tun_reader.abort();
@@ -151,10 +136,59 @@ pub async fn run_server(
     if let Some(ref iface) = ext_iface {
         let _ = crate::nat::cleanup_nat(iface).await;
     }
-    tracing::info!("Deleting TUN");
     drop(tun);
     tracing::info!("Shutdown complete");
     Ok(())
+}
+
+async fn handle_client(
+    tun: Arc<TunDevice>,
+    socket: Arc<UdpSocket>,
+    client_addr: std::net::SocketAddr,
+    crypto: Arc<Crypto>,
+    seq: Arc<AtomicU32>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    cancel: CancellationToken,
+) -> Result<(), Error> {
+    loop {
+        if cancel.is_cancelled() { return Ok(()); }
+
+        let buf = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            result = tokio::time::timeout(CLIENT_IDLE_TIMEOUT, rx.recv()) => match result {
+                Ok(Some(v)) => v,
+                Ok(None) => return Ok(()),
+                Err(_) => return Err(Error::Timeout("client idle timeout".into())),
+            },
+        };
+
+        let frame = protocol::decode(&buf)?;
+
+        if frame.is_ping() {
+            let nonce = Crypto::generate_nonce();
+            let s = seq.fetch_add(1, Ordering::Relaxed);
+            let pong = Frame { nonce, seq: s, flags: FLAG_PONG, payload: vec![] };
+            socket.send_to(&protocol::encode(&pong), client_addr).await.map_err(Error::Io)?;
+            continue;
+        }
+
+        if frame.is_pong() { continue; }
+
+        let plaintext = match crypto.decrypt(&frame.nonce, &frame.payload) {
+            Ok(p) => p,
+            Err(e) => {
+                if buf.len() == 64 {
+                    tracing::debug!("64-byte failed decrypt — possible new client, ending session");
+                    return Ok(());
+                }
+                tracing::debug!("Decryption failed: {e}");
+                continue;
+            }
+        };
+
+        tun.send(&plaintext).await.map_err(Error::Io)?;
+    }
 }
 
 async fn tun_to_clients_loop(
@@ -164,149 +198,42 @@ async fn tun_to_clients_loop(
     cancel: CancellationToken,
 ) {
     loop {
-        if cancel.is_cancelled() {
-            break;
-        }
+        if cancel.is_cancelled() { break; }
 
         let mut buf = vec![0u8; tun.mtu() as usize];
         let n = match tun.recv(&mut buf).await {
             Ok(n) => n,
-            Err(e) => {
-                tracing::error!("TUN read error: {e}");
-                break;
-            }
+            Err(e) => { tracing::error!("TUN read: {e}"); break; }
         };
         buf.truncate(n);
 
-        let dest_ip = extract_dest_ipv4(&buf);
-        if dest_ip.is_none() {
-            continue;
-        }
-        let dest_ip = dest_ip.unwrap();
+        let dest_ip = match extract_dest_ipv4(&buf) {
+            Some(ip) => ip,
+            None => continue,
+        };
 
         let (crypto, seq, client_addr) = {
             let map = sessions.lock().unwrap();
             match map.get(&dest_ip) {
-                Some(session) => (
-                    session.crypto.clone(),
-                    session.seq.clone(),
-                    session.client_addr,
-                ),
-                None => {
-                    tracing::debug!(dest = %dest_ip, "No session for destination IP, dropping");
-                    continue;
-                }
+                Some(s) => (s.crypto.clone(), s.seq.clone(), s.client_addr),
+                None => { continue; }
             }
         };
 
-        match encrypt_and_send(&buf, &crypto, &seq, &socket, client_addr).await {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::error!("Failed to send to client {}: {e}", client_addr);
-            }
+        let nonce = Crypto::generate_nonce();
+        if let Ok(ciphertext) = crypto.encrypt(&nonce, &buf) {
+            let s = seq.fetch_add(1, Ordering::Relaxed);
+            let frame = Frame { nonce, seq: s, flags: 0x00, payload: ciphertext };
+            let encoded = protocol::encode(&frame);
+            let _ = socket.send_to(&encoded, client_addr).await;
         }
     }
 }
 
 fn extract_dest_ipv4(buf: &[u8]) -> Option<Ipv4Addr> {
-    if buf.len() < 20 {
-        return None;
-    }
-    let version_ihl = buf[0];
-    if (version_ihl >> 4) != 4 {
-        return None;
-    }
-    let ihl = (version_ihl & 0x0F) as usize;
-    if buf.len() < ihl * 4 {
-        return None;
-    }
+    if buf.len() < 20 { return None; }
+    if (buf[0] >> 4) != 4 { return None; }
+    let ihl = (buf[0] & 0x0F) as usize;
+    if buf.len() < ihl * 4 { return None; }
     Some(Ipv4Addr::new(buf[16], buf[17], buf[18], buf[19]))
-}
-
-async fn encrypt_and_send(
-    plaintext: &[u8],
-    crypto: &Crypto,
-    seq: &Arc<AtomicU32>,
-    socket: &UdpSocket,
-    client_addr: std::net::SocketAddr,
-) -> Result<(), Error> {
-    let nonce = Crypto::generate_nonce();
-    let ciphertext = crypto.encrypt(&nonce, plaintext)?;
-    let s = seq.fetch_add(1, Ordering::Relaxed);
-    tracing::debug!(seq = s, len = plaintext.len(), "Packet sent");
-    let frame = Frame {
-        nonce,
-        seq: s,
-        flags: 0x00,
-        payload: ciphertext,
-    };
-    let encoded = protocol::encode(&frame);
-    socket.send_to(&encoded, client_addr).await.map_err(Error::Io)?;
-    Ok(())
-}
-
-pub async fn handle_client(
-    socket: Arc<UdpSocket>,
-    tun: Arc<TunDevice>,
-    client_addr: std::net::SocketAddr,
-    crypto: Arc<Crypto>,
-    seq: Arc<AtomicU32>,
-    _client_ip: Ipv4Addr,
-    cancel: CancellationToken,
-) -> Result<(), Error> {
-    loop {
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-
-        let mut buf = vec![0u8; 65535];
-
-        let (n, peer) = tokio::time::timeout(
-            CLIENT_IDLE_TIMEOUT,
-            socket.recv_from(&mut buf),
-        )
-        .await
-        .map_err(|_| Error::Timeout("client idle timeout".into()))??;
-
-        if peer != client_addr {
-            tracing::debug!(peer = %peer, "Ignoring datagram from unknown source");
-            continue;
-        }
-
-        let frame = protocol::decode(&buf[..n])?;
-
-        if frame.is_ping() {
-            let nonce = Crypto::generate_nonce();
-            let s = seq.fetch_add(1, Ordering::Relaxed);
-            let pong = Frame {
-                nonce,
-                seq: s,
-                flags: FLAG_PONG,
-                payload: vec![],
-            };
-            socket
-                .send_to(&protocol::encode(&pong), client_addr)
-                .await
-                .map_err(Error::Io)?;
-            continue;
-        }
-
-        if frame.is_pong() {
-            continue;
-        }
-
-        let plaintext = match crypto.decrypt(&frame.nonce, &frame.payload) {
-            Ok(p) => p,
-            Err(e) => {
-                if n == 64 {
-                    tracing::debug!("64-byte failed decrypt — possible new client handshake, ending session");
-                    return Ok(());
-                }
-                tracing::debug!("Decryption failed: {e}");
-                continue;
-            }
-        };
-        tracing::debug!(seq = frame.seq, len = plaintext.len(), "Packet received");
-        tun.send(&plaintext).await.map_err(Error::Io)?;
-    }
 }
