@@ -354,6 +354,62 @@ UDP datagrams are self-framing — no need for a 2-byte length prefix.
 
 ---
 
+## 6. Phase P4 — Multi-client
+
+**Goal**: Сервер обслуживает несколько клиентов одновременно. Каждый клиент получает уникальный IP из пула при handshake. Обратный трафик демультиплексируется по dest IP.
+
+### Step P4.1: IP Pool (`src/ip_pool.rs`)
+
+- `struct IpPool { subnet: Ipv4Addr, free: HashSet<Ipv4Addr> }` за `Arc<Mutex<>>`
+- `IpPool::new(subnet_cidr) -> Result<Self>` — создаёт пул из `tun_subnet`, резервирует первый IP для сервера
+- `allocate(&self) -> Result<Ipv4Addr>` — возвращает первый свободный IP, помечает как занятый
+- `release(&self, ip: Ipv4Addr)` — возвращает IP в пул
+- Thread-safe: используется из server_handshake (allocate) и при client disconnect (release)
+
+### Step P4.2: Extended handshake (`src/handshake.rs`)
+
+- **Server hello**: `[pubkey:32][hmac:32]` (64 байта) → `[pubkey:32][hmac:32][client_ip:4][netmask:1]` (69 байт)
+- `client_handshake(socket, psk) -> Result<([u8; 32], Ipv4Addr, u8)>` — возвращает session_key + назначенный IP + netmask
+- `server_handshake(socket, psk, ip_pool) -> Result<([u8; 32], SocketAddr, Ipv4Addr, u8)>` — аллоцирует IP из пула, отправляет в server_hello
+- Client читает 69 байт ответа, извлекает IP и netmask
+- Обновить тесты: клиент ожидает 69-байтовый ответ
+
+### Step P4.3: Server — multi-client loop (`src/server.rs`)
+
+- **Shared TUN reader**: одна tokio-задача читает TUN → парсит dest IP → находит клиента в `HashMap<client_ip, ClientSession>` → шифрует → `send_to(client_addr)`
+- **Per-client receive task**: на каждый handshake спавнится `tokio::spawn`:
+  - `recv_from` → фильтр по `client_addr` → decode → decrypt → PING/PONG → `tun.send()`
+  - PONG отправляется напрямую через `socket.send_to()`, без канала
+- **ClientSession**: `{ crypto, socket, client_addr, seq }` — хранится в shared-мапе
+- **Disconnect cleanup**: при выходе из per-client задачи — убрать из мапы, `ip_pool.release(ip)`
+- IDLE_TIMEOUT 180s (уже есть) — при срабатывании чистим мапу и освобождаем IP
+
+### Step P4.4: Client — receive IP from handshake (`src/client.rs`)
+
+- `run_client_full`: убрать зашитые defaults для IP/netmask/gateway
+- `run_client_session`: после `client_handshake` получает `(session_key, assigned_ip, netmask)`
+- IP используется для создания TUN; gateway = `.1` подсети (IP сервера в туннеле)
+- TUN создаётся после handshake (а не до, как сейчас), чтобы использовать назначенный IP
+- Если handshake упал — TUN не создаём (как сейчас в Q18)
+
+### Step P4.5: Docker multi-client test
+
+- `tests/docker_multiclient.sh`:
+  - Поднимает сервер и 2 (или 3) клиента
+  - Проверяет что каждый клиент пингует сервер (разные IP)
+  - Проверяет изоляцию: трафик клиента A не попадает клиенту B
+
+### P4 Artifacts
+
+- Сервер принимает несколько клиентов одновременно
+- Каждый клиент получает уникальный IP из пула
+- Обратный трафик корректно демультиплексируется
+- При дисконнекте IP возвращается в пул
+- Все существующие тесты проходят (single-client — частный случай multi-client)
+- Docker multi-client тест проходит
+
+---
+
 ## 7. Platform-Specific Notes
 
 ### Linux (v1)
@@ -452,6 +508,8 @@ P1.1 ─────────────────────────
 P2.1 ─→ P2.2 ─→ P2.3 ─→ P2.4 ─→ P2.5 ─→ P2.6
                                               ↓
 P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6 ─→ P3.7
+                                               ↓
+P4.1 ─→ P4.2 ─→ P4.3 ─→ P4.4 ─→ P4.5
 ```
 
 - P0 steps are sequential (each builds on the previous)
@@ -493,3 +551,12 @@ P3.1 ─→ P3.2 ─→ P3.3 ─→ P3.4 ─→ P3.5 ─→ P3.6 ─→ P3.7
 - [ ] `cargo clippy -- -D warnings` — чисто
 - [ ] tun_ip, tun_netmask, gateway убраны из конфига; TUN-подсеть управляется сервером (default `10.0.0.0/24`)
 - [ ] Клиент использует автоматически назначенные IP/netmask/gateway
+
+### P4
+- [ ] Сервер принимает несколько клиентов одновременно
+- [ ] Каждый клиент получает уникальный IP из пула при handshake
+- [ ] Server hello: 69 байт (pubkey + hmac + client_ip + netmask)
+- [ ] Shared TUN reader корректно демультиплексирует обратный трафик
+- [ ] IP освобождается при дисконнекте клиента
+- [ ] Single-client работает как частный случай multi-client
+- [ ] Docker multi-client тест проходит (2+ клиента)

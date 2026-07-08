@@ -46,7 +46,7 @@
 | FR10 | Keepalive / heartbeat между клиентом и сервером для детекта разрыва TCP-соединения. | P1 |
 | FR11 | Все инкапсулированные пакеты шифруются потоковым шифром XChaCha20-Poly1305 (каждый пакет — отдельный AEAD nonce). | P0 |
 | FR12 | Ключ шифрования — Pre-Shared Key (PSK) из конфига (hex/base64), 256 бит. | P0 |
-| FR13 | На старте клиент и сервер обмениваются эфемерными ключами через X25519 ECDH, подписанными PSK (hybrid key exchange). Сессионный ключ действует до перезапуска. | P1 |
+| FR13 | На старте клиент и сервер обмениваются эфемерными ключами через X25519 ECDH, подписанными PSK (hybrid key exchange). Для multi-client сервер назначает клиенту уникальный IP в handshake. | P1 |
 
 ## 6. Non-Functional Requirements
 
@@ -200,3 +200,4 @@
 | **P1 — Minimal Viable** | Route management (сохранение/восстановление), ECDH handshake, полный шифрованный цикл: клиент↔сервер, TCP через туннель работает. | 2 недели |
 | **P2 — Production Ready** | Graceful shutdown, reconnection, heartbeat, конфиг, логирование, тесты, error handling. | 1 неделя |
 | **P3 — Hardening** | UDP transport (fix TCP-over-TCP meltdown), автоматизация TUN-параметров (убрать из конфига), performance tuning, security review, IPv6 (если решено), CI/CD, пост-квантовая гибридная KEX. | 2 недели |
+| **P4 — Multi-client** | Сервер обслуживает несколько клиентов одновременно. IP-пул с аллокацией при handshake. Расширенный handshake (server_hello → 69 байт: pubkey+hmac+client_ip+netmask). Демультиплексирование обратного трафика через shared TUN reader. | 1 неделя |

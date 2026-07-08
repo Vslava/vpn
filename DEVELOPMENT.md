@@ -2,7 +2,7 @@
 
 ## Статус
 
-P2 (Production Ready) завершён. Текущий этап — P3 (Hardening): перевод транспорта с TCP на UDP для устранения TCP-over-TCP meltdown.
+P2 (Production Ready) завершён. Текущий этап — P4 (Multi-client): сервер обслуживает несколько клиентов одновременно.
 
 ## Тестирование
 
@@ -16,6 +16,7 @@ cargo llvm-cov --all      # покрытие (требуется cargo-llvm-cov)
 bash tests/docker_e2e.sh
 bash tests/docker_reconnect.sh
 bash tests/docker_heartbeat.sh
+bash tests/docker_multiclient.sh
 ```
 
 ## Документы разработки
@@ -27,3 +28,4 @@ bash tests/docker_heartbeat.sh
 - [VERIFICATION_P1](specs/VERIFICATION_P1.md)
 - [VERIFICATION_P2](specs/VERIFICATION_P2.md)
 - [VERIFICATION_P3](specs/VERIFICATION_P3.md)
+- [VERIFICATION_P4](specs/VERIFICATION_P4.md)
